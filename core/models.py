@@ -28,6 +28,7 @@ class User(models.Model):
     pattern_1 = models.CharField(max_length=255, null=True, blank=True)
     pattern_2 = models.CharField(max_length=255, null=True, blank=True)
     pattern_3 = models.CharField(max_length=255, null=True, blank=True)
+    pattern_4 = models.CharField(max_length=255, null=True, blank=True)
 
     def __str__(self):
         return self.user_id
