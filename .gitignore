@@ -28,3 +28,6 @@ staticfiles/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+#Additional Folders
+mall-frontend

@@ -5,7 +5,7 @@ urlpatterns = [
     path('users/', views.UserListView.as_view(), name='user-list'), # Screen 1
     path('users/<str:user_id>/', views.UserDetailView.as_view(), name='user-detail'),#Screen 2
     path('users/create/', views.CreateUserView.as_view(), name='create-user'),
-
+    path('upload-photo/', views.PhotoUploadView.as_view(), name='upload-photo'),
 
     path("mapping-data/", views.MappingDataView.as_view()),
     path("import-mapping/", views.ImportMappingView.as_view()),

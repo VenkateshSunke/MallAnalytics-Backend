@@ -1,6 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from django.core.files.storage import default_storage
+
 from .models import *
 from .serializers import *
 from shapely import wkt
@@ -35,6 +37,22 @@ class CreateUserView(APIView):
             serializer.save()
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
+    
+class PhotoUploadView(APIView):
+    def post(self, request):
+        if 'photo' not in request.FILES:
+            return Response({'error': 'No photo provided'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        photo = request.FILES['photo']
+        # Generate unique filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'user_photos/{timestamp}_{photo.name}'
+        
+        # Save the file
+        file_path = default_storage.save(filename, photo)
+        file_url = default_storage.url(file_path)
+        
+        return Response({'photo_url': file_url}, status=status.HTTP_200_OK)
 
 
 class MappingDataView(APIView):
