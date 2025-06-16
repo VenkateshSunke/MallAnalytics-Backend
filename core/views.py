@@ -7,6 +7,10 @@ from shapely import wkt
 from shapely.geometry import Polygon, Point
 import uuid
 from datetime import datetime
+import boto3
+from django.conf import settings
+from rest_framework.parsers import MultiPartParser
+from decouple import config
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
@@ -30,12 +34,9 @@ class CreateUserView(APIView):
     def post(self, request):
         serializer = UserCreateSerializer(data=request.data)
         if serializer.is_valid():
-            if User.objects.filter(user_id=serializer.validated_data['user_id']).exists():
-                return Response({"detail": "User already exists"}, status=400)
             serializer.save()
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
-
 
 class MappingDataView(APIView):
     def get(self, request):
@@ -179,3 +180,24 @@ class GetUserInterestsView(APIView):
     def get(self, request, user_id):
         interests = UserInterest.objects.filter(user_id=user_id)
         return Response(UserInterestSerializer(interests, many=True).data)
+
+class uploadPhotoView(APIView):
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        photo = request.FILES.get('photo')
+        if not photo:
+            return Response({"detail": "No photo uploaded"}, status=400)
+
+        s3 = boto3.client('s3',
+            aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY')
+        )
+
+        bucket_name = config('AWS_STORAGE_BUCKET_NAME')
+        filename = f'users/{photo.name}'
+
+        s3.upload_fileobj(photo, bucket_name, filename)
+        photo_url = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
+
+        return Response({'photo_url': photo_url}, status=200)

@@ -4,6 +4,7 @@ from .models import User, Visit, UserMovement, MallStore, Interest, UserInterest
 
 # --- SCREEN 1: USERS LIST SERIALIZER ---
 class UserListSerializer(serializers.ModelSerializer):
+    user_id = serializers.CharField(read_only=True)
     class Meta:
         model = User
         fields = [
@@ -12,6 +13,10 @@ class UserListSerializer(serializers.ModelSerializer):
             'recency', 'pattern_1'
         ]
 
+    def validate(self, data):
+        if not data.get('picture_url'):
+            raise serializers.ValidationError("Picture URL is required.")
+        return data
 # --- VISIT SUMMARY FOR USER DETAIL ---
 class VisitSummarySerializer(serializers.ModelSerializer):
     class Meta:
@@ -40,7 +45,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'user_id', 'name', 'email', 'date_of_birth',
-            'address', 'cell_phone', 'picture_url', 'profiling_questions'
+            'address', 'cell_phone', 'picture_url',
         ]
 
 

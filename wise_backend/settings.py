@@ -39,10 +39,13 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
-    "core"
+    "core",
+    "corsheaders"
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.security.SecurityMiddleware',
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -141,3 +144,6 @@ LOGGING = {
         'level': 'INFO',  # Change to DEBUG for more detailed logs
     },
 }
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",  # React frontend
+]
