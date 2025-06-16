@@ -7,6 +7,7 @@ urlpatterns = [
     path('users-create/', views.CreateUserView.as_view(), name='create-user'),
     
     path('upload-photo/', views.uploadPhotoView.as_view(), name='upload-photo'),
+    path('upload-photo-local/', views.PhotoUploadView.as_view(), name='upload-photo-local'),
 
 
     path("mapping-data/", views.MappingDataView.as_view()),

@@ -13,6 +13,7 @@ import boto3
 from django.conf import settings
 from rest_framework.parsers import MultiPartParser
 from decouple import config
+import os
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
