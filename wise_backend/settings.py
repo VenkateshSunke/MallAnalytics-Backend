@@ -146,6 +146,10 @@ LOGGING = {
         'level': 'INFO',  # Change to DEBUG for more detailed logs
     },
 }
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",  # React frontend
+]
+
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')

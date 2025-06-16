@@ -1,16 +1,18 @@
 from django.db import models
 import uuid
+import random
+import string
 
 # --- USERS ---
 class User(models.Model):
-    user_id = models.CharField(max_length=255, primary_key=True)
+    user_id = models.CharField(max_length=255, primary_key=True, editable=False)
     name = models.CharField(max_length=255, null=True, blank=True)
     email = models.EmailField(null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     address = models.TextField(null=True, blank=True)
     cell_phone = models.CharField(max_length=20, null=True, blank=True)
     picture_url = models.TextField(null=True, blank=True)
-    profiling_questions = models.TextField(null=True, blank=True)
+    # profiling_questions = models.TextField(null=True, blank=True)
 
     monthly_visits = models.IntegerField(null=True, blank=True)
     yearly_visits = models.IntegerField(null=True, blank=True)
@@ -32,6 +34,17 @@ class User(models.Model):
 
     def __str__(self):
         return self.user_id
+    def save(self, *args, **kwargs):
+        if not self.user_id:
+            self.user_id = self.generate_unique_user_id()
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def generate_unique_user_id():
+        while True:
+            new_id = 'U' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            if not User.objects.filter(user_id=new_id).exists():
+                return new_id
 
 # --- VISITS ---
 class Visit(models.Model):
