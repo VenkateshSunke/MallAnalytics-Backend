@@ -41,34 +41,55 @@ class CreateUserView(APIView):
         print("Validation errors:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
+    
 class PhotoUploadView(APIView):
+    parser_classes = [MultiPartParser]  # Important for file uploads
+
     def post(self, request):
         if 'photo' not in request.FILES:
             return Response({'error': 'No photo provided'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Get user data from request
-        user_data = request.data.copy()
+
+        # Extract only the fields needed for UserCreateSerializer
+        user_data = {
+            'name': request.data.get('name'),
+            'email': request.data.get('email'),
+            'date_of_birth': request.data.get('date_of_birth'),
+            'address': request.data.get('address'),
+            'cell_phone': request.data.get('cell_phone'),
+            'picture_url': request.data.get('picture_url', ''),  # Optional field
+        }
+
         photo = request.FILES['photo']
-        
-        # Remove photo from user_data to avoid serializer issues
-        if 'photo' in user_data:
-            del user_data['photo']
-        
-        # Validate user data before uploading photo
+
+        # Validate user data
         serializer = UserCreateSerializer(data=user_data)
         if not serializer.is_valid():
-            print("Validation errors:", serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # If validation passes, upload the photo
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'user_photos/{timestamp}_{photo.name}'
+        # Clean the filename to prevent issues
+        clean_name = re.sub(r'[^\w\.-]', '_', photo.name)
+        filename = f'user_photos/{timestamp}_{clean_name}'
         
-        # Save the file
-        file_path = default_storage.save(filename, photo)
-        file_url = default_storage.url(file_path)
+        try:
+            file_path = default_storage.save(filename, photo)
+            file_url = default_storage.url(file_path)
+            
+            # Update the picture_url in user_data if you want to save it
+            user_data['picture_url'] = file_url
+            
+            # If you want to create the user at this point:
+            # user = serializer.save()
+            
+            return Response({
+                'photo_url': file_url,
+                'user_data': user_data  # Optional: return the validated data
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
-        return Response({'photo_url': file_url}, status=status.HTTP_200_OK)
 
 class MappingDataView(APIView):
     def get(self, request):
