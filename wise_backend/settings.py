@@ -26,8 +26,7 @@ SECRET_KEY = "django-insecure-friw+4ju8-k_drce@5e88icvhz#a0kl%i9c+25v+6)r&vdte66
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
-
+ALLOWED_HOSTS = ['*']
 
 # Application definition
 
@@ -146,4 +145,35 @@ LOGGING = {
 }
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # React frontend
+    "http://192.168.110.70:5173",  # React frontend on local IP
+    "http://localhost:3000",  # Alternative React port
+    "http://192.168.110.70:3000",  # Alternative React port on local IP
+]
+
+# For development, allow all origins (remove this in production)
+CORS_ALLOW_ALL_ORIGINS = True
+
+# Allow credentials
+CORS_ALLOW_CREDENTIALS = True
+
+# Allow all headers and methods for development
+CORS_ALLOW_ALL_HEADERS = True
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
+
+# Additional settings for mobile development
+CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
+
+# Trusted origins for CSRF (add your frontend URLs)
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://192.168.110.70:5173",
+    "http://localhost:3000",
+    "http://192.168.110.70:3000",
 ]
