@@ -47,8 +47,21 @@ class PhotoUploadView(APIView):
         if 'photo' not in request.FILES:
             return Response({'error': 'No photo provided'}, status=status.HTTP_400_BAD_REQUEST)
         
+        # Get user data from request
+        user_data = request.data.copy()
         photo = request.FILES['photo']
-        # Generate unique filename
+        
+        # Remove photo from user_data to avoid serializer issues
+        if 'photo' in user_data:
+            del user_data['photo']
+        
+        # Validate user data before uploading photo
+        serializer = UserCreateSerializer(data=user_data)
+        if not serializer.is_valid():
+            print("Validation errors:", serializer.errors)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # If validation passes, upload the photo
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'user_photos/{timestamp}_{photo.name}'
         

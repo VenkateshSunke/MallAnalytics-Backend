@@ -33,7 +33,7 @@ class User(models.Model):
     pattern_4 = models.CharField(max_length=255, null=True, blank=True)
 
     def __str__(self):
-        return self.user_id
+        return f"{self.user_id} - {self.name}"
     def save(self, *args, **kwargs):
         if not self.user_id:
             self.user_id = self.generate_unique_user_id()
