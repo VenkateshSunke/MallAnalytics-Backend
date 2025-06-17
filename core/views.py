@@ -11,6 +11,7 @@ import boto3
 from django.conf import settings
 from rest_framework.parsers import MultiPartParser
 from django.core.files.storage import default_storage
+import re
 
 from decouple import config
 
@@ -41,7 +42,7 @@ class CreateUserView(APIView):
         print("Validation errors:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    
+
 class PhotoUploadView(APIView):
     parser_classes = [MultiPartParser]  # Important for file uploads
 
