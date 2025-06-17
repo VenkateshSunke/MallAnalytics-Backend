@@ -30,16 +30,17 @@ class UserDetailView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = UserDetailWithVisitsSerializer(user)
+        print(serializer.data)
         return Response(serializer.data)
 
-# --- API for regestering user ----
 class CreateUserView(APIView):
     def post(self, request):
         serializer = UserCreateSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+            user = serializer.save()
+            return Response(UserCreateSerializer(user).data, status=status.HTTP_201_CREATED)
+        print("Validation errors:", serializer.errors)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 class PhotoUploadView(APIView):
     def post(self, request):

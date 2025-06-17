@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from django.core.validators import RegexValidator, validate_email
+
 from .models import User, Visit, UserMovement, MallStore, Interest, UserInterest, Store, Camera, Calibration
 
 
@@ -31,7 +33,7 @@ class UserDetailWithVisitsSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'user_id', 'name', 'email', 'date_of_birth', 'address', 'cell_phone',
-            'picture_url', 'profiling_questions',
+            'picture_url',
             'monthly_visits', 'yearly_visits', 'life_visits',
             'avg_time_per_visit_year', 'avg_time_per_visit_life',
             'stores_visited_month', 'stores_visited_life',
@@ -41,6 +43,26 @@ class UserDetailWithVisitsSerializer(serializers.ModelSerializer):
         ]
 
 class UserCreateSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(
+        max_length=100,
+        required=True,
+        validators=[RegexValidator(r'^[a-zA-Z\s]+$', message="Name must contain only letters and spaces.")]
+    )
+    email = serializers.EmailField(
+        required=True,
+        validators=[validate_email]
+    )
+    date_of_birth = serializers.DateField(
+        required=True,
+        error_messages={"invalid": "Enter a valid date in YYYY-MM-DD format."}
+    )
+    address = serializers.CharField(required=True, allow_blank=False)
+    cell_phone = serializers.CharField(
+        required=True,
+        validators=[RegexValidator(r'^\+?\d{10,15}$', message="Enter a valid phone number.")]
+    )
+    picture_url = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = User
         fields = [
@@ -48,12 +70,17 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'address', 'cell_phone', 'picture_url',
         ]
 
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+
 
 # --- USER SERIALIZER ---
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['user_id', 'name', 'email', 'date_of_birth', 'address', 'cell_phone', 'picture_url', 'profiling_questions']
+        fields = ['user_id', 'name', 'email', 'date_of_birth', 'address', 'cell_phone', 'picture_url']
 
 
 
