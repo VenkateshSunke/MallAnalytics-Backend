@@ -10,6 +10,8 @@ from datetime import datetime
 import boto3
 from django.conf import settings
 from rest_framework.parsers import MultiPartParser
+from django.core.files.storage import default_storage
+
 from decouple import config
 
 # --- API for Screen 1 ---

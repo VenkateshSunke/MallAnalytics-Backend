@@ -6,6 +6,7 @@ urlpatterns = [
     path('users/<str:user_id>/', views.UserDetailView.as_view(), name='user-detail'),#Screen 2
     path('users-create/', views.CreateUserView.as_view(), name='create-user'),
     
+    path('upload-photo-local/', views.PhotoUploadView.as_view(), name='upload-photo-local'),
     path('upload-photo/', views.uploadPhotoView.as_view(), name='upload-photo'),
 
 
