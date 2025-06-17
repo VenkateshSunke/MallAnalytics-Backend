@@ -1,8 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.core.files.storage import default_storage
-
 from .models import *
 from .serializers import *
 from shapely import wkt
@@ -13,7 +11,6 @@ import boto3
 from django.conf import settings
 from rest_framework.parsers import MultiPartParser
 from decouple import config
-import os
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
@@ -30,9 +27,9 @@ class UserDetailView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = UserDetailWithVisitsSerializer(user)
-        print(serializer.data)
         return Response(serializer.data)
 
+# --- API for regestering user ----
 class CreateUserView(APIView):
     def post(self, request):
         serializer = UserCreateSerializer(data=request.data)
