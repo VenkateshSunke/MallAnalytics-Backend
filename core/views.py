@@ -249,10 +249,18 @@ class uploadPhotoView(APIView):
         )
 
         bucket_name = config('AWS_STORAGE_BUCKET_NAME')
-        filename = f'users/{photo.name}'
+        # filename = f'users/{photo.name}'
+        filename = f'users/{uuid.uuid4().hex}_{photo.name}'
 
-        s3.upload_fileobj(photo, bucket_name, filename)
-        photo_url = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
+        try:
+            s3.upload_fileobj(photo, bucket_name, filename)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=500)
+
+        return Response({"photo_url": filename}, status=200)
+
+        # s3.upload_fileobj(photo, bucket_name, filename)
+        # photo_url = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
 
         # # Register the face in Rekognition
         # rekognition = boto3.client('rekognition',
@@ -282,4 +290,27 @@ class uploadPhotoView(APIView):
         # else:
         #     return Response({'photo_url': photo_url, 'detail': 'No face detected'}, status=400)
 
-        return Response({'photo_url': photo_url}, status=200)
+        # return Response({'photo_url': photo_url}, status=200)
+
+class GeneratePresignedURL(APIView):
+    def get(self, request):
+        s3_key = request.query_params.get('s3_key')
+        if not s3_key:
+            return Response({"detail": "Missing s3_key"}, status=400)
+
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY'),
+            region_name=config('AWS_REGION')
+        )
+
+        try:
+            presigned_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': config('AWS_STORAGE_BUCKET_NAME'), 'Key': s3_key},
+                ExpiresIn=3600  # 1 hour
+            )
+            return Response({"url": presigned_url})
+        except Exception as e:
+            return Response({"detail": str(e)}, status=500)
