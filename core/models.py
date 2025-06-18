@@ -12,6 +12,7 @@ class User(models.Model):
     address = models.TextField(null=True, blank=True)
     cell_phone = models.CharField(max_length=20, null=True, blank=True)
     picture_url = models.TextField(null=True, blank=True)
+    face_id = models.CharField(max_length=100, unique=True, null=True)
     # profiling_questions = models.TextField(null=True, blank=True)
 
     monthly_visits = models.IntegerField(null=True, blank=True)

@@ -254,4 +254,32 @@ class uploadPhotoView(APIView):
         s3.upload_fileobj(photo, bucket_name, filename)
         photo_url = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
 
-        return Response({'photo_url': photo_url}, status=200)
+        # Register the face in Rekognition
+        rekognition = boto3.client('rekognition',
+            aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY'),
+            region_name=config('AWS_REGION')
+        )
+        collection_id = config('AWS_REKOGNITION_COLLECTION_ID')
+
+        response = rekognition.index_faces(
+            CollectionId=collection_id,
+            Image={
+                'S3Object': {
+                    'Bucket': bucket_name,
+                    'Name': filename
+                }
+            },
+            ExternalImageId=photo.name,  # Optional: used for linking
+            DetectionAttributes=['DEFAULT']
+        )
+        
+        # Extract faceId(s)
+        face_records = response.get('FaceRecords', [])
+        if face_records:
+            face_id = face_records[0]['Face']['FaceId']
+            return Response({'photo_url': photo_url, 'face_id': face_id}, status=200)
+        else:
+            return Response({'photo_url': photo_url, 'detail': 'No face detected'}, status=400)
+
+        # return Response({'photo_url': photo_url}, status=200)
