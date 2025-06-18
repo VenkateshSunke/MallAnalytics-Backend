@@ -12,6 +12,7 @@ from django.conf import settings
 from rest_framework.parsers import MultiPartParser
 from django.core.files.storage import default_storage
 import re
+from urllib.parse import unquote
 
 from decouple import config
 
@@ -297,7 +298,7 @@ class GeneratePresignedURL(APIView):
         s3_key = request.query_params.get('s3_key')
         if not s3_key:
             return Response({"detail": "Missing s3_key"}, status=400)
-
+        s3_key = unquote(s3_key)
         s3 = boto3.client(
             's3',
             aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
