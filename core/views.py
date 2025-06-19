@@ -12,15 +12,27 @@ from django.conf import settings
 from rest_framework.parsers import MultiPartParser
 from django.core.files.storage import default_storage
 import re
+from rest_framework.pagination import PageNumberPagination
+from django.db.models import Q
 
 from decouple import config
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
     def get(self, request):
+        search = request.query_params.get('search', '')
+        page = request.query_params.get('page', 1)
+        page_size = request.query_params.get('page_size', 10)
+
         users = User.objects.all()
-        serializer = UserListSerializer(users, many=True)
-        return Response(serializer.data)
+        if search:
+            users = users.filter(Q(name__icontains=search) | Q(email__icontains=search))
+
+        paginator = PageNumberPagination()
+        paginator.page_size = int(page_size)
+        result_page = paginator.paginate_queryset(users, request)
+        serializer = UserListSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 # --- API for Screen 2 ---
 class UserDetailView(APIView):
