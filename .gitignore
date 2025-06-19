@@ -32,5 +32,8 @@ Thumbs.db
 
 #Additional Folders
 mall-frontend
+media
+user-photos
+*.jpeg
 
 
