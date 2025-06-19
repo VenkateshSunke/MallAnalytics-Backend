@@ -8,6 +8,7 @@ urlpatterns = [
     
     path('upload-photo-local/', views.PhotoUploadView.as_view(), name='upload-photo-local'),
     path('upload-photo/', views.uploadPhotoView.as_view(), name='upload-photo'),
+    path('get-photo-url/',views.GeneratePresignedURL.as_view(),name='get-photo-url'),
 
 
     path("mapping-data/", views.MappingDataView.as_view()),
