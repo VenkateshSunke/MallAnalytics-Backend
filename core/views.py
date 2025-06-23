@@ -20,6 +20,8 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.generics import ListAPIView, CreateAPIView, RetrieveUpdateDestroyAPIView
 from django.db.models import Avg, Count, Q
 from decouple import config
+from django.utils import timezone
+from datetime import timedelta
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
@@ -389,8 +391,15 @@ class CampaignContactListView(ListAPIView):
 
 class DashboardMetricsView(APIView):
     def get(self, request):
+        now = timezone.now()
+        thirty_days_ago = now - timedelta(days=30)
+        seven_days_ago = now - timedelta(days=7)
         total_visitors = User.objects.count()
-        active_users = Visit.objects.filter(start_time__isnull=False, end_time__isnull=True).count()
+        active_users = User.objects.filter(
+            visits__start_time__gte=thirty_days_ago,
+            visits__end_time__isnull=False
+        ).distinct().count()
+        new_active_users = User.objects.filter(first_visit__gte=seven_days_ago).count()
         avg_duration = Visit.objects.exclude(duration__isnull=True).aggregate(avg=Avg("duration"))["avg"]
 
         if avg_duration:
@@ -405,4 +414,5 @@ class DashboardMetricsView(APIView):
             "total_visitors": total_visitors,
             "active_users": active_users,
             "avg_visit_duration": avg_visit_duration,
+            "new_active_users": new_active_users
         })
