@@ -104,6 +104,13 @@ class UserDetailView(APIView):
             return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = UserDetailWithVisitsSerializer(user)
         return Response(serializer.data)
+    def delete(self, request, user_id):
+        try:
+            user = User.objects.get(user_id=user_id)
+        except User.DoesNotExist:
+            return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        user.delete()
+        return Response({"detail": "User deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
 
 # --- API for regestering user ----
 class CreateUserView(APIView):
