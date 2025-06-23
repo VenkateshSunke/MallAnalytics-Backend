@@ -28,7 +28,8 @@ class UserListView(APIView):
         page = request.query_params.get('page', 1)
         page_size = request.query_params.get('page_size', 10)
 
-        users = User.objects.all()
+        users = User.objects.all().order_by('-created_at')  # or '-date_joined'
+
         if search:
             users = users.filter(Q(name__icontains=search) | Q(email__icontains=search))
 
@@ -365,10 +366,10 @@ class AddCampaignContactsView(APIView):
             user_ids = request.data.get('user_ids', [])
             added = []
             for user_id in user_ids:
-                user = User.objects.filter(id=user_id).first()
+                user = User.objects.filter(user_id=user_id).first()
                 if user:
                     CampaignContact.objects.get_or_create(campaign=campaign, user=user)
-                    added.append(user.id)
+                    added.append(user.user_id)
             return Response({"added_user_ids": added}, status=status.HTTP_201_CREATED)
         except EmailCampaign.DoesNotExist:
             return Response({'error': 'Campaign not found'}, status=404)

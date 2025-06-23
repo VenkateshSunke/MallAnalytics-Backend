@@ -33,6 +33,7 @@ class User(models.Model):
     pattern_2 = models.CharField(max_length=255, null=True, blank=True)
     pattern_3 = models.CharField(max_length=255, null=True, blank=True)
     pattern_4 = models.CharField(max_length=255, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"{self.user_id} - {self.name}"

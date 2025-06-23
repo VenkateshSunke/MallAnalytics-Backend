@@ -13,7 +13,7 @@ class UserListSerializer(serializers.ModelSerializer):
         fields = [
             'user_id', 'name', 'email', 'cell_phone', 'picture_url',
             'monthly_visits', 'yearly_visits', 'life_visits',
-            'recency', 'pattern_1'
+            'recency', 'pattern_1','created_at'
         ]
 
     def validate(self, data):
@@ -203,6 +203,7 @@ class CampaignMinimalSerializer(serializers.ModelSerializer):
 
 
 class CampaignContactSerializer(serializers.ModelSerializer):
+    user = UserSerializer()
     class Meta:
         model = CampaignContact
         fields = ['campaign', 'user', 'added_at']
