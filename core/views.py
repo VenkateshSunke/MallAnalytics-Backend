@@ -18,7 +18,7 @@ from urllib.parse import unquote
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.generics import ListAPIView, CreateAPIView, RetrieveUpdateDestroyAPIView
-
+from django.db.models import Avg, Count, Q
 from decouple import config
 
 # --- API for Screen 1 ---
@@ -386,3 +386,23 @@ class CampaignContactListView(ListAPIView):
     def get_queryset(self):
         campaign_id = self.kwargs['campaign_id']
         return CampaignContact.objects.filter(campaign__campaign_id=campaign_id)
+
+class DashboardMetricsView(APIView):
+    def get(self, request):
+        total_visitors = User.objects.count()
+        active_users = Visit.objects.filter(start_time__isnull=False, end_time__isnull=True).count()
+        avg_duration = Visit.objects.exclude(duration__isnull=True).aggregate(avg=Avg("duration"))["avg"]
+
+        if avg_duration:
+            # Format timedelta to HH:MM:SS
+            hours, remainder = divmod(avg_duration.total_seconds(), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            avg_visit_duration = f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
+        else:
+            avg_visit_duration = None
+
+        return Response({
+            "total_visitors": total_visitors,
+            "active_users": active_users,
+            "avg_visit_duration": avg_visit_duration,
+        })

@@ -30,5 +30,9 @@ urlpatterns = [
     path('campaigns/<int:campaign_id>/toggle/', views.EmailCampaignToggleView.as_view(), name='campaign-toggle'),
     path('campaigns/<int:campaign_id>/add-contacts/', views.AddCampaignContactsView.as_view(), name='campaign-add-contacts'),
     path('campaigns/minimal/', views.CampaignMinimalListView.as_view(), name='campaign-minimal'),
-    path('campaigns/<int:campaign_id>/contacts/', views.CampaignContactListView.as_view(), name='campaign-contacts')
+    path('campaigns/<int:campaign_id>/contacts/', views.CampaignContactListView.as_view(), name='campaign-contacts'),
+    
+    # ---- dashboard endpoint ---- #
+    path('dashboard-metrics/', views.DashboardMetricsView.as_view(), name='dashboard-metrics'),
+
 ]
