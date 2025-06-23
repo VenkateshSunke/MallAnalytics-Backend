@@ -25,15 +25,69 @@ from datetime import timedelta
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
+    # def get(self, request):
+    #     search = request.query_params.get('search', '')
+    #     page = request.query_params.get('page', 1)
+    #     page_size = request.query_params.get('page_size', 10)
+
+    #     users = User.objects.all().order_by('-created_at')  # or '-date_joined'
+
+    #     if search:
+    #         users = users.filter(Q(name__icontains=search) | Q(email__icontains=search))
+
+    #     paginator = PageNumberPagination()
+    #     paginator.page_size = int(page_size)
+    #     result_page = paginator.paginate_queryset(users, request)
+    #     serializer = UserListSerializer(result_page, many=True)
+    #     return paginator.get_paginated_response(serializer.data)
     def get(self, request):
         search = request.query_params.get('search', '')
         page = request.query_params.get('page', 1)
         page_size = request.query_params.get('page_size', 10)
 
-        users = User.objects.all().order_by('-created_at')  # or '-date_joined'
+        # custom filters
+        name = request.query_params.get('name')
+        membership = request.query_params.get('membership')
+        # store = request.query_params.get('store')
+        monthly_freq = request.query_params.get('monthlyFreq')
+        last_visit = request.query_params.get('lastVisit')
+        visits=request.query_params.get('visits')
+        email = request.query_params.get('email')
+
+        users = User.objects.all().order_by('-created_at')
 
         if search:
             users = users.filter(Q(name__icontains=search) | Q(email__icontains=search))
+
+        if name:
+            users = users.filter(name__icontains=name)
+
+        if email:
+            users = users.filter(email__icontains=email)
+
+        if membership:
+            users = users.filter(pattern_1__icontains=membership)  # or adjust field name
+
+        if monthly_freq:
+            try:
+                users = users.filter(monthly_freq=int(monthly_freq))
+            except ValueError:
+                pass
+
+        if last_visit:
+            try:
+                parsed_date = parse_date(last_visit)
+                if parsed_date:
+                    users = users.filter(last_visit=parsed_date)
+            except ValueError:
+                pass
+        
+        if visits:
+            try:
+                users = users.filter(life_visits=int(visits))
+            except ValueError:
+                pass
+        # Add more filters (e.g., store) as needed
 
         paginator = PageNumberPagination()
         paginator.page_size = int(page_size)
@@ -392,13 +446,13 @@ class CampaignContactListView(ListAPIView):
 class DashboardMetricsView(APIView):
     def get(self, request):
         now = timezone.now()
-        thirty_days_ago = now - timedelta(days=30)
         seven_days_ago = now - timedelta(days=7)
         total_visitors = User.objects.count()
         active_users = User.objects.filter(
-            visits__start_time__gte=thirty_days_ago,
-            visits__end_time__isnull=False
+            visits__start_time__isnull=False,
+            visits__end_time__isnull=True
         ).distinct().count()
+
         new_active_users = User.objects.filter(first_visit__gte=seven_days_ago).count()
         avg_duration = Visit.objects.exclude(duration__isnull=True).aggregate(avg=Avg("duration"))["avg"]
 
