@@ -2,6 +2,7 @@ from django.db import models
 import uuid
 import random
 import string
+from django.utils import timezone
 
 # --- USERS ---
 class User(models.Model):
@@ -120,3 +121,49 @@ class Camera(models.Model):
 class Calibration(models.Model):
     store = models.OneToOneField(Store, on_delete=models.CASCADE, primary_key=True, related_name="calibration")
     matrix = models.JSONField()
+
+class BusinessHour(models.Model):
+    DAY_CHOICES = [
+        ('Monday', 'Monday'),
+        ('Tuesday', 'Tuesday'),
+        ('Wednesday', 'Wednesday'),
+        ('Thursday', 'Thursday'),
+        ('Friday', 'Friday'),
+        ('Saturday', 'Saturday'),
+        ('Sunday', 'Sunday'),
+    ]
+    day = models.CharField(max_length=10, choices=DAY_CHOICES)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+
+    def __str__(self):
+        return f"{self.day}: {self.start_time} - {self.end_time}"
+
+
+class EmailCampaign(models.Model):
+    campaign_id = models.AutoField(primary_key=True)
+    name = models.CharField(max_length=255)
+    created_at = models.DateTimeField(default=timezone.now)
+    business_hours = models.ManyToManyField(BusinessHour, related_name="campaigns")
+    is_active = models.BooleanField(default=False)
+
+    emails_delivered = models.IntegerField(default=0)
+    emails_opened = models.IntegerField(default=0)
+    emails_bounced = models.IntegerField(default=0)
+    emails_scheduled = models.IntegerField(default=0)
+
+    def __str__(self):
+        return self.name
+
+
+class CampaignContact(models.Model):
+    campaign = models.ForeignKey(EmailCampaign, on_delete=models.CASCADE)
+    user = models.ForeignKey('User', on_delete=models.CASCADE)
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('campaign', 'user')  # Avoid duplicate entries
+
+    def __str__(self):
+        return f"{self.user.name} in {self.campaign.name}"
+

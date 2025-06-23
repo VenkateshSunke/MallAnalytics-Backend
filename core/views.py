@@ -15,6 +15,9 @@ import re
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q
 from urllib.parse import unquote
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.generics import ListAPIView, CreateAPIView, RetrieveUpdateDestroyAPIView
 
 from decouple import config
 
@@ -138,7 +141,7 @@ class MappingDataView(APIView):
         }
 
         return Response({"stores": stores, "cameras": cameras, "calibration": {"store_matrices": calibrations}})
-
+@method_decorator(csrf_exempt, name='dispatch')
 class ImportMappingView(APIView):
     def post(self, request):
         data = request.data
@@ -327,3 +330,58 @@ class GeneratePresignedURL(APIView):
             return Response({"url": presigned_url})
         except Exception as e:
             return Response({"detail": str(e)}, status=500)
+
+class BusinessHourListView(ListAPIView):
+    queryset = BusinessHour.objects.all()
+    serializer_class = BusinessHourSerializer
+
+
+class EmailCampaignListCreateView(ListAPIView, CreateAPIView):
+    queryset = EmailCampaign.objects.all()
+    serializer_class = EmailCampaignSerializer
+
+
+class EmailCampaignDetailView(RetrieveUpdateDestroyAPIView):
+    queryset = EmailCampaign.objects.all()
+    serializer_class = EmailCampaignSerializer
+    lookup_field = 'campaign_id'
+
+
+class EmailCampaignToggleView(APIView):
+    def patch(self, request, campaign_id):
+        try:
+            campaign = EmailCampaign.objects.get(pk=campaign_id)
+            campaign.is_active = request.data.get('is_active', campaign.is_active)
+            campaign.save()
+            return Response({'status': 'updated', 'is_active': campaign.is_active})
+        except EmailCampaign.DoesNotExist:
+            return Response({'error': 'Not found'}, status=404)
+
+
+class AddCampaignContactsView(APIView):
+    def post(self, request, campaign_id):
+        try:
+            campaign = EmailCampaign.objects.get(pk=campaign_id)
+            user_ids = request.data.get('user_ids', [])
+            added = []
+            for user_id in user_ids:
+                user = User.objects.filter(id=user_id).first()
+                if user:
+                    CampaignContact.objects.get_or_create(campaign=campaign, user=user)
+                    added.append(user.id)
+            return Response({"added_user_ids": added}, status=status.HTTP_201_CREATED)
+        except EmailCampaign.DoesNotExist:
+            return Response({'error': 'Campaign not found'}, status=404)
+
+
+class CampaignMinimalListView(ListAPIView):
+    queryset = EmailCampaign.objects.all()
+    serializer_class = CampaignMinimalSerializer
+
+
+class CampaignContactListView(ListAPIView):
+    serializer_class = CampaignContactSerializer
+
+    def get_queryset(self):
+        campaign_id = self.kwargs['campaign_id']
+        return CampaignContact.objects.filter(campaign__campaign_id=campaign_id)

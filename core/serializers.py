@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from django.core.validators import RegexValidator, validate_email
 
-from .models import User, Visit, UserMovement, MallStore, Interest, UserInterest, Store, Camera, Calibration
+# from .models import User, Visit, UserMovement, MallStore, Interest, UserInterest, Store, Camera, Calibration
+from .models import *;
 
 
 # --- SCREEN 1: USERS LIST SERIALIZER ---
@@ -176,3 +177,32 @@ class CalibrationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Calibration
         fields = '__all__'
+
+class BusinessHourSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BusinessHour
+        fields = ['id', 'day', 'start_time', 'end_time']
+
+
+class EmailCampaignSerializer(serializers.ModelSerializer):
+    # business_hours = serializers.PrimaryKeyRelatedField(
+    #     many=True, queryset=BusinessHour.objects.all()
+    # )
+
+    class Meta:
+        model = EmailCampaign
+        fields = [
+            'campaign_id', 'name', 'created_at', 'is_active',
+            'emails_delivered', 'emails_opened', 'emails_bounced', 'emails_scheduled'
+        ]
+    
+class CampaignMinimalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmailCampaign
+        fields = ['campaign_id', 'name']
+
+
+class CampaignContactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CampaignContact
+        fields = ['campaign', 'user', 'added_at']

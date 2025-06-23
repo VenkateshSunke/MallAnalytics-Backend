@@ -12,7 +12,7 @@ urlpatterns = [
 
 
     path("mapping-data/", views.MappingDataView.as_view()),
-    path("import-mapping/", views.ImportMappingView.as_view()),
+    path("import-mapping/", views.ImportMappingView.as_view(),name='import-mapping'),
     path("visits/", views.CreateVisitView.as_view()),
     path("visits/<int:visit_id>/", views.GetVisitView.as_view()),
     path("movements/", views.CreateMovementView.as_view()),
@@ -21,4 +21,14 @@ urlpatterns = [
     path("interests/", views.CreateListInterestView.as_view()),
     path("user-interests/", views.CreateUserInterestView.as_view()),
     path("user-interests/<str:user_id>/", views.GetUserInterestsView.as_view()),
+
+    path('business-hours/', views.BusinessHourListView.as_view(), name='business-hour-list'),
+
+    # ---- campaign's related apis ----- #
+    path('campaigns/', views.EmailCampaignListCreateView.as_view(), name='campaign-list-create'),
+    path('campaigns/<int:campaign_id>/', views.EmailCampaignDetailView.as_view(), name='campaign-detail'),
+    path('campaigns/<int:campaign_id>/toggle/', views.EmailCampaignToggleView.as_view(), name='campaign-toggle'),
+    path('campaigns/<int:campaign_id>/add-contacts/', views.AddCampaignContactsView.as_view(), name='campaign-add-contacts'),
+    path('campaigns/minimal/', views.CampaignMinimalListView.as_view(), name='campaign-minimal'),
+    path('campaigns/<int:campaign_id>/contacts/', views.CampaignContactListView.as_view(), name='campaign-contacts')
 ]
