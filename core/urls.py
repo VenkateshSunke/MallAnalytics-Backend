@@ -31,8 +31,13 @@ urlpatterns = [
     path('campaigns/<int:campaign_id>/add-contacts/', views.AddCampaignContactsView.as_view(), name='campaign-add-contacts'),
     path('campaigns/minimal/', views.CampaignMinimalListView.as_view(), name='campaign-minimal'),
     path('campaigns/<int:campaign_id>/contacts/', views.CampaignContactListView.as_view(), name='campaign-contacts'),
+    path('campaigns/<int:campaign_id>/steps/', views.CampaignStepListCreateView.as_view(), name='campaign-step-list-create'),
+    path('campaigns/<int:campaign_id>/steps/<int:pk>/', views.CampaignStepDetailView.as_view(), name='campaign-step-detail'),
+    path('steps/<int:step_id>/schedule/', views.ScheduleCampaignStepView.as_view(), name='schedule-campaign-step'),
     
     # ---- dashboard endpoint ---- #
     path('dashboard-metrics/', views.DashboardMetricsView.as_view(), name='dashboard-metrics'),
+
+    path('sendgrid/senders/', views.SendGridSenderListView.as_view(), name='sendgrid-sender-list'),
 
 ]

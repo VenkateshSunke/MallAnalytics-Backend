@@ -207,3 +207,12 @@ class CampaignContactSerializer(serializers.ModelSerializer):
     class Meta:
         model = CampaignContact
         fields = ['campaign', 'user', 'added_at']
+
+class CampaignStepSerializer(serializers.ModelSerializer):
+    campaign = serializers.PrimaryKeyRelatedField(read_only=True)
+    
+    class Meta:
+        model = CampaignStep
+        fields = [
+            'id', 'campaign', 'step_order', 'subject', 'body', 'send_at', 'created_at', 'sendgrid_campaign_id'
+        ]

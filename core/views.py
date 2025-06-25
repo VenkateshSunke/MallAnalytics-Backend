@@ -17,11 +17,14 @@ from django.db.models import Q
 from urllib.parse import unquote
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.generics import ListAPIView, CreateAPIView, RetrieveUpdateDestroyAPIView
+from rest_framework.generics import ListAPIView, CreateAPIView, RetrieveUpdateDestroyAPIView, ListCreateAPIView
 from django.db.models import Avg, Count, Q
 from decouple import config
 from django.utils import timezone
 from datetime import timedelta
+from django.utils.timezone import now
+
+from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
@@ -404,6 +407,18 @@ class EmailCampaignListCreateView(ListAPIView, CreateAPIView):
     queryset = EmailCampaign.objects.all()
     serializer_class = EmailCampaignSerializer
 
+    def perform_create(self, serializer):
+        campaign = serializer.save()
+        
+        # Create SendGrid list and save its ID
+        try:
+            sendgrid_list_id = create_list(campaign.name)
+            campaign.sendgrid_list_id = sendgrid_list_id
+            campaign.save()
+            print(f"Created SendGrid list {sendgrid_list_id} for campaign {campaign.campaign_id}")
+        except Exception as e:
+            print(f"Failed to create SendGrid list for campaign {campaign.campaign_id}: {e}")
+
 
 class EmailCampaignDetailView(RetrieveUpdateDestroyAPIView):
     queryset = EmailCampaign.objects.all()
@@ -427,13 +442,35 @@ class AddCampaignContactsView(APIView):
         try:
             campaign = EmailCampaign.objects.get(pk=campaign_id)
             user_ids = request.data.get('user_ids', [])
+            
+            if not user_ids:
+                return Response({'error': 'No user_ids provided'}, status=400)
+            
             added = []
             for user_id in user_ids:
                 user = User.objects.filter(user_id=user_id).first()
                 if user:
                     CampaignContact.objects.get_or_create(campaign=campaign, user=user)
                     added.append(user.user_id)
+            
+            # Sync contacts to SendGrid only if we have a SendGrid list
+            if campaign.sendgrid_list_id:
+                try:
+                    contacts = CampaignContact.objects.filter(campaign=campaign)
+                    status_code, response = sync_contacts_to_list(campaign, contacts)
+                    print(f"Synced {len(added)} contacts to SendGrid list {campaign.sendgrid_list_id}")
+                except Exception as e:
+                    print(f"Failed to sync contacts to SendGrid for campaign {campaign_id}: {e}")
+                    # Still return success for the database operation
+                    return Response({
+                        "added_user_ids": added,
+                        "warning": "Contacts added to database but SendGrid sync failed"
+                    }, status=status.HTTP_201_CREATED)
+            else:
+                print(f"Campaign {campaign_id} has no SendGrid list ID, skipping sync")
+            
             return Response({"added_user_ids": added}, status=status.HTTP_201_CREATED)
+            
         except EmailCampaign.DoesNotExist:
             return Response({'error': 'Campaign not found'}, status=404)
 
@@ -477,3 +514,163 @@ class DashboardMetricsView(APIView):
             "avg_visit_duration": avg_visit_duration,
             "new_active_users": new_active_users
         })
+
+class CampaignStepListCreateView(ListCreateAPIView):
+    serializer_class = CampaignStepSerializer
+    
+    def get_queryset(self):
+        campaign_id = self.kwargs['campaign_id']
+        return CampaignStep.objects.filter(campaign__campaign_id=campaign_id)
+    
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception as e:
+            print(f"Error creating campaign step: {e}")
+            return Response({'error': str(e)}, status=400)
+    
+    def perform_create(self, serializer):
+        campaign_id = self.kwargs['campaign_id']
+        try:
+            campaign = EmailCampaign.objects.get(campaign_id=campaign_id)
+        except EmailCampaign.DoesNotExist:
+            raise serializers.ValidationError(f"Campaign with ID {campaign_id} does not exist")
+        
+        step = serializer.save(campaign=campaign)
+        
+        # Validate step content before creating SendGrid campaign
+        if not step.subject or not step.subject.strip():
+            print(f"Step {step.id} created without subject")
+            return
+        
+        if not step.body or not step.body.strip():
+            print(f"Step {step.id} created without body")
+            return
+        
+        # Get sender_id from request data, fallback to default if not provided
+        request = self.request
+        sender_id = request.data.get('sender_id') or get_default_sender_id()
+        
+        if sender_id and campaign.sendgrid_list_id:
+            try:
+                # Validate sender_id
+                if not str(sender_id).isdigit():
+                    print(f"Invalid sender_id: {sender_id}")
+                    return
+                
+                sendgrid_campaign_id = create_sendgrid_campaign(step, sender_id)
+                if sendgrid_campaign_id:
+                    step.sendgrid_campaign_id = sendgrid_campaign_id
+                    step.save()
+                    print(f"Created SendGrid campaign {sendgrid_campaign_id} for step {step.id}")
+            except Exception as e:
+                print(f"Failed to create SendGrid campaign for step {step.id}: {e}")
+                # Don't raise exception here - step is still created, just without SendGrid campaign
+
+class CampaignStepDetailView(RetrieveUpdateDestroyAPIView):
+    queryset = CampaignStep.objects.all()
+    serializer_class = CampaignStepSerializer
+    lookup_field = 'pk'
+
+# ScheduleCampaignStepView now allows selecting the sender by passing 'sender_id' in the POST body.
+class ScheduleCampaignStepView(APIView):
+    def post(self, request, step_id):
+        try:
+            step = CampaignStep.objects.get(pk=step_id)
+            campaign = step.campaign
+            
+            # Validate required data
+            if not step.send_at:
+                return Response({'error': 'Step must have a send_at time'}, status=400)
+            
+            # Validate step content
+            if not step.subject or not step.subject.strip():
+                return Response({'error': 'Step must have a subject'}, status=400)
+            
+            if not step.body or not step.body.strip():
+                return Response({'error': 'Step must have body content'}, status=400)
+            
+            # Check if send_at is in the future
+            if step.send_at <= now():
+                return Response({'error': 'Send time must be in the future'}, status=400)
+            
+            # Get sender_id from request or use default
+            sender_id = request.data.get('sender_id')
+            if not sender_id:
+                sender_id = get_default_sender_id()
+                if not sender_id:
+                    return Response({'error': 'No sender ID available'}, status=400)
+            
+            # Validate sender_id
+            try:
+                sender_id = int(sender_id)
+            except (ValueError, TypeError):
+                return Response({'error': 'Invalid sender ID format'}, status=400)
+            
+            suppression_group_id = request.data.get('suppression_group_id')
+            
+            # Ensure campaign has SendGrid list
+            if not campaign.sendgrid_list_id:
+                return Response({'error': 'Campaign must have a SendGrid list before scheduling'}, status=400)
+            
+            # Create SendGrid campaign if not already created
+            if not step.sendgrid_campaign_id:
+                try:
+                    sg_campaign_id = create_sendgrid_campaign(step, sender_id, suppression_group_id)
+                    step.sendgrid_campaign_id = sg_campaign_id
+                    step.save()
+                    print(f"Created SendGrid campaign {sg_campaign_id} for step {step_id}")
+                except SendGridError as e:
+                    print(f"SendGrid API error creating campaign for step {step_id}: {e}")
+                    return Response({'error': f'SendGrid API error: {str(e)}'}, status=500)
+                except Exception as e:
+                    print(f"Unexpected error creating SendGrid campaign for step {step_id}: {e}")
+                    return Response({'error': 'Failed to create SendGrid campaign'}, status=500)
+            
+            # Schedule the campaign
+            try:
+                status_code = schedule_sendgrid_campaign(step.sendgrid_campaign_id, step.send_at)
+                print(f"Scheduled SendGrid campaign {step.sendgrid_campaign_id} for step {step_id}")
+                
+                # Get campaign details for debugging
+                campaign_details = get_campaign_details(step.sendgrid_campaign_id)
+                print(f"Campaign details: {campaign_details}")
+                
+                return Response({
+                    'status': 'scheduled',
+                    'sendgrid_campaign_id': step.sendgrid_campaign_id,
+                    'send_at': step.send_at.isoformat(),
+                    'campaign_details': campaign_details
+                })
+            except SendGridError as e:
+                print(f"SendGrid API error scheduling campaign for step {step_id}: {e}")
+                return Response({'error': f'SendGrid API error: {str(e)}'}, status=500)
+            except Exception as e:
+                print(f"Unexpected error scheduling SendGrid campaign for step {step_id}: {e}")
+                return Response({'error': 'Failed to schedule campaign'}, status=500)
+                
+        except CampaignStep.DoesNotExist:
+            return Response({'error': 'Step not found'}, status=404)
+
+
+class SendGridSenderListView(APIView):
+    def get(self, request):
+        try:
+            senders = get_senders()
+            return Response(senders)
+        except Exception as e:
+            print(f"Failed to get SendGrid senders: {e}")
+            return Response({'error': 'Failed to retrieve senders'}, status=500)
+
+class SendGridCampaignDetailsView(APIView):
+    """Debug view to get campaign details from SendGrid"""
+    def get(self, request, campaign_id):
+        try:
+            details = get_campaign_details(campaign_id)
+            if details:
+                return Response(details)
+            else:
+                return Response({'error': 'Campaign not found'}, status=404)
+        except Exception as e:
+            print(f"Failed to get SendGrid campaign details: {e}")
+            return Response({'error': 'Failed to retrieve campaign details'}, status=500)

@@ -147,6 +147,7 @@ class EmailCampaign(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
     business_hours = models.ManyToManyField(BusinessHour, related_name="campaigns")
     is_active = models.BooleanField(default=False)
+    sendgrid_list_id = models.CharField(max_length=100, blank=True, null=True)
 
     emails_delivered = models.IntegerField(default=0)
     emails_opened = models.IntegerField(default=0)
@@ -155,12 +156,29 @@ class EmailCampaign(models.Model):
 
     def __str__(self):
         return self.name
+    
+
+class CampaignStep(models.Model):
+    campaign = models.ForeignKey(EmailCampaign, on_delete=models.CASCADE, related_name='steps')
+    step_order = models.PositiveIntegerField()  # 1 = Day 1, 2 = Day 2 etc.
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    send_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    sendgrid_campaign_id = models.CharField(max_length=100, null=True, blank=True)
+
+    class Meta:
+        ordering = ['step_order']
+
+    def __str__(self):
+        return f"Step {self.step_order} of {self.campaign.name}"
 
 
 class CampaignContact(models.Model):
     campaign = models.ForeignKey(EmailCampaign, on_delete=models.CASCADE)
     user = models.ForeignKey('User', on_delete=models.CASCADE)
     added_at = models.DateTimeField(auto_now_add=True)
+    sendgrid_contact_id = models.CharField(max_length=100, null=True, blank=True)
 
     class Meta:
         unique_together = ('campaign', 'user')  # Avoid duplicate entries
