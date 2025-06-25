@@ -185,15 +185,10 @@ class BusinessHourSerializer(serializers.ModelSerializer):
 
 
 class EmailCampaignSerializer(serializers.ModelSerializer):
-    # business_hours = serializers.PrimaryKeyRelatedField(
-    #     many=True, queryset=BusinessHour.objects.all()
-    # )
-
     class Meta:
         model = EmailCampaign
         fields = [
-            'campaign_id', 'name', 'created_at', 'is_active',
-            'emails_delivered', 'emails_opened', 'emails_bounced', 'emails_scheduled'
+            'campaign_id', 'name', 'created_at', 'is_active'
         ]
     
 class CampaignMinimalSerializer(serializers.ModelSerializer):

@@ -23,8 +23,11 @@ from decouple import config
 from django.utils import timezone
 from datetime import timedelta
 from django.utils.timezone import now
+import pytz
+from django.utils.timezone import is_naive
+from datetime import timezone
 
-from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details
+from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
@@ -409,21 +412,53 @@ class EmailCampaignListCreateView(ListAPIView, CreateAPIView):
 
     def perform_create(self, serializer):
         campaign = serializer.save()
-        
-        # Create SendGrid list and save its ID
         try:
             sendgrid_list_id = create_list(campaign.name)
             campaign.sendgrid_list_id = sendgrid_list_id
             campaign.save()
             print(f"Created SendGrid list {sendgrid_list_id} for campaign {campaign.campaign_id}")
         except Exception as e:
+            # Roll back campaign creation if SendGrid list creation fails
+            campaign.delete()
             print(f"Failed to create SendGrid list for campaign {campaign.campaign_id}: {e}")
+            raise serializers.ValidationError({
+                'sendgrid_list_id': f'Failed to create SendGrid list: {e}'
+            })
 
 
 class EmailCampaignDetailView(RetrieveUpdateDestroyAPIView):
     queryset = EmailCampaign.objects.all()
     serializer_class = EmailCampaignSerializer
     lookup_field = 'campaign_id'
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Delete all steps and their SendGrid campaigns
+        step_results = []
+        for step in instance.steps.all():
+            sg_id = step.sendgrid_campaign_id
+            step.delete()
+            if sg_id:
+                sg_result = delete_sendgrid_campaign(sg_id)
+                step_results.append((sg_id, sg_result))
+        # Delete the SendGrid list
+        list_result = None
+        if instance.sendgrid_list_id:
+            list_result = delete_sendgrid_list(instance.sendgrid_list_id)
+        # Delete the campaign itself
+        super().destroy(request, *args, **kwargs)
+        # Build response
+        data = {"detail": "Campaign and all steps deleted successfully"}
+        if step_results:
+            data["steps"] = [
+                {"sendgrid_campaign_id": sg_id, "deleted": res} for sg_id, res in step_results
+            ]
+        if instance.sendgrid_list_id:
+            if list_result:
+                data["sendgrid_list"] = f"SendGrid list {instance.sendgrid_list_id} deleted successfully."
+            else:
+                data["sendgrid_list"] = f"Failed to delete SendGrid list {instance.sendgrid_list_id}. It may have already been deleted or there was an error."
+        return Response(data, status=204)
 
 
 class EmailCampaignToggleView(APIView):
@@ -547,9 +582,10 @@ class CampaignStepListCreateView(ListCreateAPIView):
             print(f"Step {step.id} created without body")
             return
         
-        # Get sender_id from request data, fallback to default if not provided
+        # Get sender_id and suppression_group_id from request data
         request = self.request
         sender_id = request.data.get('sender_id') or get_default_sender_id()
+        suppression_group_id = request.data.get('suppression_group_id')
         
         if sender_id and campaign.sendgrid_list_id:
             try:
@@ -558,11 +594,24 @@ class CampaignStepListCreateView(ListCreateAPIView):
                     print(f"Invalid sender_id: {sender_id}")
                     return
                 
-                sendgrid_campaign_id = create_sendgrid_campaign(step, sender_id)
+                sendgrid_campaign_id = create_sendgrid_campaign(step, sender_id, suppression_group_id)
                 if sendgrid_campaign_id:
                     step.sendgrid_campaign_id = sendgrid_campaign_id
                     step.save()
                     print(f"Created SendGrid campaign {sendgrid_campaign_id} for step {step.id}")
+                    # Schedule the campaign immediately if send_at is set
+                    if step.send_at:
+                        try:
+                            send_at = step.send_at
+                            if is_naive(send_at):
+                                local_tz = pytz.timezone('Asia/Kolkata')
+                                send_at = local_tz.localize(send_at)
+                            send_at_utc = send_at.astimezone(timezone.utc)
+                            print(f"Scheduling SendGrid campaign {sendgrid_campaign_id}: original send_at={step.send_at}, UTC={send_at_utc}")
+                            schedule_sendgrid_campaign(sendgrid_campaign_id, send_at_utc)
+                            print(f"Scheduled SendGrid campaign {sendgrid_campaign_id} for {send_at_utc}")
+                        except Exception as e:
+                            print(f"Failed to schedule SendGrid campaign {sendgrid_campaign_id}: {e}")
             except Exception as e:
                 print(f"Failed to create SendGrid campaign for step {step.id}: {e}")
                 # Don't raise exception here - step is still created, just without SendGrid campaign
@@ -571,6 +620,22 @@ class CampaignStepDetailView(RetrieveUpdateDestroyAPIView):
     queryset = CampaignStep.objects.all()
     serializer_class = CampaignStepSerializer
     lookup_field = 'pk'
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        sendgrid_id = instance.sendgrid_campaign_id
+        response = super().destroy(request, *args, **kwargs)
+        sg_result = None
+        if sendgrid_id:
+            sg_result = delete_sendgrid_campaign(sendgrid_id)
+        # Build a custom response
+        data = {"detail": "Step deleted successfully"}
+        if sendgrid_id:
+            if sg_result:
+                data["sendgrid"] = f"SendGrid campaign {sendgrid_id} deleted successfully."
+            else:
+                data["sendgrid"] = f"Step deleted, but failed to delete SendGrid campaign {sendgrid_id}. It may have already been deleted or there was an error."
+        return Response(data, status=204)
 
 # ScheduleCampaignStepView now allows selecting the sender by passing 'sender_id' in the POST body.
 class ScheduleCampaignStepView(APIView):
@@ -674,3 +739,25 @@ class SendGridCampaignDetailsView(APIView):
         except Exception as e:
             print(f"Failed to get SendGrid campaign details: {e}")
             return Response({'error': 'Failed to retrieve campaign details'}, status=500)
+
+class SendGridSuppressionGroupListView(APIView):
+    def get(self, request):
+        try:
+            groups = get_suppression_groups()
+            return Response(groups)
+        except Exception as e:
+            print(f"Failed to get SendGrid suppression groups: {e}")
+            return Response({'error': 'Failed to retrieve suppression groups'}, status=500)
+
+class CampaignStepSendGridStatsView(APIView):
+    def get(self, request, step_id):
+        try:
+            step = CampaignStep.objects.get(pk=step_id)
+            if not step.sendgrid_campaign_id:
+                return Response({'error': 'No SendGrid campaign ID for this step'}, status=404)
+            stats = get_campaign_stats(step.sendgrid_campaign_id)
+            if stats is None:
+                return Response({'error': 'Failed to fetch stats from SendGrid'}, status=500)
+            return Response(stats)
+        except CampaignStep.DoesNotExist:
+            return Response({'error': 'Step not found'}, status=404)

@@ -106,17 +106,22 @@ def create_sendgrid_campaign(step, sender_id, suppression_group_id=None):
         
         data = {
             "name": campaign_name,
-            "subject": step.subject.strip(),
-            "html_content": validated_html,
-            "sender_id": int(sender_id),  # Ensure sender_id is integer
-            "list_ids": [step.campaign.sendgrid_list_id],
-            "categories": [f"campaign_{getattr(step.campaign, 'campaign_id', 'unknown')}", f"step_{step.id}"]  # Add categories for tracking
+            "categories": [f"campaign_{getattr(step.campaign, 'campaign_id', 'unknown')}", f"step_{step.id}"],
+            "send_to": {
+                "list_ids": [step.campaign.sendgrid_list_id]
+            },
+            "email_config": {
+                "subject": step.subject.strip(),
+                "html_content": validated_html,
+                "sender_id": int(sender_id),
+                "editor": "code"
+            }
         }
-
         # Only add suppression_group_id if it's provided and valid
-        if suppression_group_id:
+        if suppression_group_id is not None and suppression_group_id != "":
+            logger.info(f"Suppression group received: {suppression_group_id} (type: {type(suppression_group_id)})")
             try:
-                data["suppression_group_id"] = int(suppression_group_id)
+                data["email_config"]["suppression_group_id"] = int(suppression_group_id)
             except (ValueError, TypeError):
                 logger.warning(f"[SendGrid] Invalid suppression_group_id: {suppression_group_id}")
 
@@ -233,3 +238,53 @@ def get_campaign_details(campaign_id):
     except Exception as e:
         logger.error(f"[SendGrid] Error getting campaign details: {e}")
         return None
+
+def get_suppression_groups():
+    """Get all suppression (unsubscribe) groups from SendGrid"""
+    try:
+        res = requests.get(f"{SENDGRID_BASE_URL}/asm/groups", headers=HEADERS)
+        _handle_response(res, "Get suppression groups")
+        return res.json()
+    except Exception as e:
+        logger.error(f"[SendGrid] Error getting suppression groups: {e}")
+        return []
+
+def get_campaign_stats(campaign_id):
+    """Get stats for a specific SendGrid Single Send campaign (delivered, opened, bounced, etc.)"""
+    try:
+        url = f"{SENDGRID_BASE_URL}/marketing/stats/singlesends/{campaign_id}"
+        params = {"aggregated_by": "total"}
+        res = requests.get(url, headers=HEADERS, params=params)
+        _handle_response(res, "Get campaign stats")
+        return res.json()
+    except Exception as e:
+        logger.error(f"[SendGrid] Error getting campaign stats: {e}")
+        return None
+
+def delete_sendgrid_campaign(campaign_id):
+    """Delete a SendGrid Single Send campaign by its ID."""
+    try:
+        url = f"{SENDGRID_BASE_URL}/marketing/singlesends/{campaign_id}"
+        res = requests.delete(url, headers=HEADERS)
+        if res.status_code not in (200, 202, 204):
+            logger.error(f"[SendGrid] Failed to delete campaign {campaign_id}: {res.status_code} - {res.text}")
+            return False
+        logger.info(f"[SendGrid] Deleted campaign {campaign_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[SendGrid] Error deleting campaign {campaign_id}: {e}")
+        return False
+
+def delete_sendgrid_list(list_id):
+    """Delete a SendGrid list by its ID."""
+    try:
+        url = f"{SENDGRID_BASE_URL}/marketing/lists/{list_id}"
+        res = requests.delete(url, headers=HEADERS)
+        if res.status_code not in (200, 202, 204):
+            logger.error(f"[SendGrid] Failed to delete list {list_id}: {res.status_code} - {res.text}")
+            return False
+        logger.info(f"[SendGrid] Deleted list {list_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[SendGrid] Error deleting list {list_id}: {e}")
+        return False

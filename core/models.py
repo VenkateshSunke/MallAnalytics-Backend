@@ -146,13 +146,8 @@ class EmailCampaign(models.Model):
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(default=timezone.now)
     business_hours = models.ManyToManyField(BusinessHour, related_name="campaigns")
-    is_active = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
     sendgrid_list_id = models.CharField(max_length=100, blank=True, null=True)
-
-    emails_delivered = models.IntegerField(default=0)
-    emails_opened = models.IntegerField(default=0)
-    emails_bounced = models.IntegerField(default=0)
-    emails_scheduled = models.IntegerField(default=0)
 
     def __str__(self):
         return self.name
