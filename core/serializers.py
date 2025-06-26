@@ -63,12 +63,13 @@ class UserCreateSerializer(serializers.ModelSerializer):
         validators=[RegexValidator(r'^\+?\d{10,15}$', message="Enter a valid phone number.")]
     )
     picture_url = serializers.CharField(required=False, allow_blank=True)
+    face_id = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = User
         fields = [
             'user_id', 'name', 'email', 'date_of_birth',
-            'address', 'cell_phone', 'picture_url',
+            'address', 'cell_phone', 'picture_url','face_id'
         ]
 
     def validate_email(self, value):

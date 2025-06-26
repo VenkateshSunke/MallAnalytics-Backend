@@ -25,7 +25,6 @@ from datetime import timedelta
 from django.utils.timezone import now
 import pytz
 from django.utils.timezone import is_naive
-from datetime import timezone
 
 from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list
 
@@ -324,59 +323,113 @@ class GetUserInterestsView(APIView):
 class uploadPhotoView(APIView):
     parser_classes = [MultiPartParser]
 
+    # def post(self, request):
+    #     photo = request.FILES.get('photo')
+    #     if not photo:
+    #         return Response({"detail": "No photo uploaded"}, status=400)
+
+    #     s3 = boto3.client('s3',
+    #         aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
+    #         aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY')
+    #     )
+
+    #     bucket_name = config('AWS_STORAGE_BUCKET_NAME')
+    #     # filename = f'users/{photo.name}'
+    #     filename = f'users/{uuid.uuid4().hex}_{photo.name}'
+
+    #     try:
+    #         s3.upload_fileobj(photo, bucket_name, filename)
+    #     except Exception as e:
+    #         return Response({"detail": str(e)}, status=500)
+
+    #     return Response({"photo_url": filename}, status=200)
+
+    #     # s3.upload_fileobj(photo, bucket_name, filename)
+    #     # photo_url = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
+
+    #     # # Register the face in Rekognition
+    #     # rekognition = boto3.client('rekognition',
+    #     #     aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
+    #     #     aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY'),
+    #     #     region_name=config('AWS_REGION')
+    #     # )
+    #     # collection_id = config('AWS_REKOGNITION_COLLECTION_ID')
+
+    #     # response = rekognition.index_faces(
+    #     #     CollectionId=collection_id,
+    #     #     Image={
+    #     #         'S3Object': {
+    #     #             'Bucket': bucket_name,
+    #     #             'Name': filename
+    #     #         }
+    #     #     },
+    #     #     ExternalImageId=photo.name,  # Optional: used for linking
+    #     #     DetectionAttributes=['DEFAULT']
+    #     # )
+        
+    #     # # Extract faceId(s)
+    #     # face_records = response.get('FaceRecords', [])
+    #     # if face_records:
+    #     #     face_id = face_records[0]['Face']['FaceId']
+    #     #     return Response({'photo_url': photo_url, 'face_id': face_id}, status=200)
+    #     # else:
+    #     #     return Response({'photo_url': photo_url, 'detail': 'No face detected'}, status=400)
+
+    #     # return Response({'photo_url': photo_url}, status=200)
     def post(self, request):
         photo = request.FILES.get('photo')
         if not photo:
             return Response({"detail": "No photo uploaded"}, status=400)
 
-        s3 = boto3.client('s3',
-            aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY')
-        )
+        # Generate unique key
+        s3_key = f'users/{uuid.uuid4().hex}_{photo.name}'
 
+        # Get AWS credentials and config
+        aws_access_key = config('AWS_ACCESS_KEY_ID')
+        aws_secret_key = config('AWS_SECRET_ACCESS_KEY')
         bucket_name = config('AWS_STORAGE_BUCKET_NAME')
-        # filename = f'users/{photo.name}'
-        filename = f'users/{uuid.uuid4().hex}_{photo.name}'
+        region = config('AWS_REGION')
+        collection_id = config('AWS_REKOGNITION_COLLECTION_ID')
 
         try:
-            s3.upload_fileobj(photo, bucket_name, filename)
+            # Upload to S3
+            s3 = boto3.client('s3',
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                region_name=region
+            )
+            s3.upload_fileobj(photo, bucket_name, s3_key)
+
+            # Register with Rekognition
+            rekognition = boto3.client('rekognition',
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                region_name=region
+            )
+
+            response = rekognition.index_faces(
+                CollectionId=collection_id,
+                Image={'S3Object': {'Bucket': bucket_name, 'Name': s3_key}},
+                ExternalImageId=photo.name,
+                DetectionAttributes=['DEFAULT']
+            )
+
+            face_records = response.get('FaceRecords', [])
+            if not face_records:
+                return Response({
+                    "photo_url": s3_key,
+                    "detail": "No face detected in the image"
+                }, status=400)
+
+            face_id = face_records[0]['Face']['FaceId']
+
+            return Response({
+                "photo_url": s3_key,
+                "face_id": face_id
+            }, status=200)
+
         except Exception as e:
             return Response({"detail": str(e)}, status=500)
-
-        return Response({"photo_url": filename}, status=200)
-
-        # s3.upload_fileobj(photo, bucket_name, filename)
-        # photo_url = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
-
-        # # Register the face in Rekognition
-        # rekognition = boto3.client('rekognition',
-        #     aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
-        #     aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY'),
-        #     region_name=config('AWS_REGION')
-        # )
-        # collection_id = config('AWS_REKOGNITION_COLLECTION_ID')
-
-        # response = rekognition.index_faces(
-        #     CollectionId=collection_id,
-        #     Image={
-        #         'S3Object': {
-        #             'Bucket': bucket_name,
-        #             'Name': filename
-        #         }
-        #     },
-        #     ExternalImageId=photo.name,  # Optional: used for linking
-        #     DetectionAttributes=['DEFAULT']
-        # )
-        
-        # # Extract faceId(s)
-        # face_records = response.get('FaceRecords', [])
-        # if face_records:
-        #     face_id = face_records[0]['Face']['FaceId']
-        #     return Response({'photo_url': photo_url, 'face_id': face_id}, status=200)
-        # else:
-        #     return Response({'photo_url': photo_url, 'detail': 'No face detected'}, status=400)
-
-        # return Response({'photo_url': photo_url}, status=200)
 
 class GeneratePresignedURL(APIView):
     def get(self, request):
