@@ -20,11 +20,12 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.generics import ListAPIView, CreateAPIView, RetrieveUpdateDestroyAPIView, ListCreateAPIView
 from django.db.models import Avg, Count, Q
 from decouple import config
-from django.utils import timezone
+from django.utils import timezone as dj_timezone
 from datetime import timedelta
 from django.utils.timezone import now
 import pytz
 from django.utils.timezone import is_naive
+from datetime import timezone
 
 from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list
 
@@ -577,7 +578,7 @@ class CampaignContactListView(ListAPIView):
 
 class DashboardMetricsView(APIView):
     def get(self, request):
-        now = timezone.now()
+        now = dj_timezone.now()
         seven_days_ago = now - timedelta(days=7)
         total_visitors = User.objects.count()
         active_users = User.objects.filter(
@@ -646,7 +647,6 @@ class CampaignStepListCreateView(ListCreateAPIView):
                 if not str(sender_id).isdigit():
                     print(f"Invalid sender_id: {sender_id}")
                     return
-                
                 sendgrid_campaign_id = create_sendgrid_campaign(step, sender_id, suppression_group_id)
                 if sendgrid_campaign_id:
                     step.sendgrid_campaign_id = sendgrid_campaign_id

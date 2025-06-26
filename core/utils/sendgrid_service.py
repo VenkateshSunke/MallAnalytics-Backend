@@ -181,6 +181,8 @@ def schedule_sendgrid_campaign(campaign_id, dt):
         )
         
         logger.info(f"[SendGrid] Schedule response: {res.status_code} - {res.text}")
+        if res.status_code >= 400:
+            logger.error(f"[SendGrid] Schedule failed for campaign {campaign_id}. Status: {res.status_code}, Response: {res.text}, Payload: {data}")
         _handle_response(res, "Schedule campaign")
         
         logger.info(f"[SendGrid] Scheduled campaign {campaign_id} for {iso_time}")
