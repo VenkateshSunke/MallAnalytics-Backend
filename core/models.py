@@ -181,3 +181,16 @@ class CampaignContact(models.Model):
     def __str__(self):
         return f"{self.user.name} in {self.campaign.name}"
 
+class CampaignStepImage(models.Model):
+    """Model to store image metadata for campaign steps"""
+    step = models.ForeignKey('CampaignStep', on_delete=models.CASCADE, related_name='images')
+    s3_key = models.CharField(max_length=500)
+    s3_url = models.URLField()
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    file_size = models.IntegerField()
+    upload_order = models.IntegerField(default=0)  # For maintaining image order
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['upload_order', 'created_at']

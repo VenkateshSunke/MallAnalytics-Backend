@@ -26,8 +26,16 @@ from django.utils.timezone import now
 import pytz
 from django.utils.timezone import is_naive
 from datetime import timezone
+from io import BytesIO
 
 from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list
+from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
+
+# Helper to ensure body is wrapped in <html><body>...</body></html>
+def ensure_html_body(body):
+    if '<body' not in body:
+        return f"<html><body>{body}</body></html>"
+    return body
 
 # --- API for Screen 1 ---
 class UserListView(APIView):
@@ -609,7 +617,7 @@ class CampaignStepListCreateView(ListCreateAPIView):
     
     def get_queryset(self):
         campaign_id = self.kwargs['campaign_id']
-        return CampaignStep.objects.filter(campaign__campaign_id=campaign_id)
+        return CampaignStep.objects.filter(campaign__campaign_id=campaign_id).prefetch_related('images')
     
     def create(self, request, *args, **kwargs):
         try:
@@ -625,7 +633,60 @@ class CampaignStepListCreateView(ListCreateAPIView):
         except EmailCampaign.DoesNotExist:
             raise serializers.ValidationError(f"Campaign with ID {campaign_id} does not exist")
         
+        # Handle image uploads
+        image_files = self.request.FILES.getlist('image_files', [])
+        uploaded_images = []
+        
+        if image_files:
+            s3_service = S3ImageService()
+            for i, image_file in enumerate(image_files):
+                try:
+                    # Read file into bytes once
+                    image_file.seek(0)
+                    file_bytes = image_file.read()
+                    # For S3 upload, create a new BytesIO each time
+                    file_copy = BytesIO(file_bytes)
+                    file_copy.name = image_file.name
+                    file_copy.content_type = getattr(image_file, 'content_type', 'application/octet-stream')
+                    image_data = s3_service.upload_image(
+                        file_copy,
+                        campaign_id=campaign_id,
+                        step_id=None
+                    )
+                    uploaded_images.append({
+                        'data': image_data,
+                        'order': i,
+                        'file': file_copy
+                    })
+                except Exception as e:
+                    print(f"Failed to upload image {image_file.name}: {e}")
+                    # Continue with other images
+        
+        # Create the step
         step = serializer.save(campaign=campaign)
+        
+        # Create image records and update step body with embedded images
+        if uploaded_images:
+            image_urls = []
+            for img_info in uploaded_images:
+                # Create image record
+                step_image = CampaignStepImage.objects.create(
+                    step=step,
+                    s3_key=img_info['data']['s3_key'],
+                    s3_url=img_info['data']['url'],
+                    original_filename=img_info['data']['filename'],
+                    content_type=img_info['data']['content_type'],
+                    file_size=img_info['data']['size'],
+                    upload_order=img_info['order']
+                )
+                image_urls.append(img_info['data']['url'])
+            
+            # Auto-embed images in HTML content
+            if step.body:
+                safe_body = ensure_html_body(step.body)
+                updated_body = auto_embed_images_in_html(safe_body, [img['data'] for img in uploaded_images])
+                step.body = updated_body
+                step.save()
         
         # Validate step content before creating SendGrid campaign
         if not step.subject or not step.subject.strip():
@@ -669,18 +730,33 @@ class CampaignStepListCreateView(ListCreateAPIView):
                 print(f"Failed to create SendGrid campaign for step {step.id}: {e}")
                 # Don't raise exception here - step is still created, just without SendGrid campaign
 
+
 class CampaignStepDetailView(RetrieveUpdateDestroyAPIView):
     queryset = CampaignStep.objects.all()
     serializer_class = CampaignStepSerializer
     lookup_field = 'pk'
 
+    def get_queryset(self):
+        return CampaignStep.objects.prefetch_related('images')
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         sendgrid_id = instance.sendgrid_campaign_id
+        
+        # Delete associated images from S3
+        s3_service = S3ImageService()
+        for image in instance.images.all():
+            try:
+                s3_service.delete_image(image.s3_key)
+                print(f"Deleted image from S3: {image.s3_key}")
+            except Exception as e:
+                print(f"Failed to delete image from S3: {e}")
+        
         response = super().destroy(request, *args, **kwargs)
         sg_result = None
         if sendgrid_id:
             sg_result = delete_sendgrid_campaign(sendgrid_id)
+        
         # Build a custom response
         data = {"detail": "Step deleted successfully"}
         if sendgrid_id:
@@ -689,6 +765,80 @@ class CampaignStepDetailView(RetrieveUpdateDestroyAPIView):
             else:
                 data["sendgrid"] = f"Step deleted, but failed to delete SendGrid campaign {sendgrid_id}. It may have already been deleted or there was an error."
         return Response(data, status=204)
+    
+class CampaignStepImageView(APIView):
+    def post(self, request, step_id):
+        """Upload additional images to an existing step"""
+        try:
+            step = CampaignStep.objects.get(pk=step_id)
+            image_files = request.FILES.getlist('images', [])
+            
+            if not image_files:
+                return Response({'error': 'No images provided'}, status=400)
+            
+            s3_service = S3ImageService()
+            uploaded_images = []
+            
+            # Get current max order
+            max_order = step.images.aggregate(
+                max_order=models.Max('upload_order')
+            )['max_order'] or -1
+            
+            for i, image_file in enumerate(image_files):
+                try:
+                    # Upload to S3
+                    image_data = s3_service.upload_image(
+                        image_file,
+                        campaign_id=step.campaign.campaign_id,
+                        step_id=step.id
+                    )
+                    
+                    # Create image record
+                    step_image = CampaignStepImage.objects.create(
+                        step=step,
+                        s3_key=image_data['s3_key'],
+                        s3_url=image_data['url'],
+                        original_filename=image_data['filename'],
+                        content_type=image_data['content_type'],
+                        file_size=image_data['size'],
+                        upload_order=max_order + i + 1
+                    )
+                    
+                    uploaded_images.append(CampaignStepImageSerializer(step_image).data)
+                    
+                except Exception as e:
+                    print(f"Failed to upload image {image_file.name}: {e}")
+                    continue
+            
+            return Response({
+                'message': f'Successfully uploaded {len(uploaded_images)} images',
+                'images': uploaded_images
+            })
+            
+        except CampaignStep.DoesNotExist:
+            return Response({'error': 'Step not found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+    
+    def delete(self, request, step_id, image_id):
+        """Delete a specific image"""
+        try:
+            step = CampaignStep.objects.get(pk=step_id)
+            image = step.images.get(pk=image_id)
+            
+            # Delete from S3
+            s3_service = S3ImageService()
+            s3_service.delete_image(image.s3_key)
+            
+            # Delete from database
+            image.delete()
+            
+            return Response({'message': 'Image deleted successfully'})
+            
+        except (CampaignStep.DoesNotExist, CampaignStepImage.DoesNotExist):
+            return Response({'error': 'Step or image not found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
 
 # ScheduleCampaignStepView now allows selecting the sender by passing 'sender_id' in the POST body.
 class ScheduleCampaignStepView(APIView):

@@ -204,11 +204,26 @@ class CampaignContactSerializer(serializers.ModelSerializer):
         model = CampaignContact
         fields = ['campaign', 'user', 'added_at']
 
+class CampaignStepImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CampaignStepImage
+        fields = ['id', 's3_url', 'original_filename', 'content_type', 'file_size', 'upload_order']
+
 class CampaignStepSerializer(serializers.ModelSerializer):
-    campaign = serializers.PrimaryKeyRelatedField(read_only=True)
+    images = CampaignStepImageSerializer(many=True, read_only=True)
+    # Add image_files field for handling uploads
+    image_files = serializers.ListField(
+        child=serializers.ImageField(),
+        write_only=True,
+        required=False,
+        allow_empty=True
+    )
     
     class Meta:
         model = CampaignStep
-        fields = [
-            'id', 'campaign', 'step_order', 'subject', 'body', 'send_at', 'created_at', 'sendgrid_campaign_id'
-        ]
+        fields = ['id', 'step_order', 'subject', 'body', 'send_at', 'sendgrid_campaign_id', 'images', 'image_files']
+        read_only_fields = ['sendgrid_campaign_id']
+
+    def create(self, validated_data):
+        validated_data.pop('image_files', None)
+        return super().create(validated_data)
