@@ -41,7 +41,6 @@ INSTALLED_APPS = [
     "rest_framework",
     "core",
     "corsheaders",
-    "wise_backend.logs",
     "accounts",
 ]
 
