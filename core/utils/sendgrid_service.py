@@ -192,16 +192,28 @@ def schedule_sendgrid_campaign(campaign_id, dt):
         logger.error(f"[SendGrid] Network error scheduling campaign: {e}")
         raise SendGridError(f"Network error scheduling campaign: {e}")
 
-def get_senders():
-    """Get all verified senders from SendGrid"""
+def get_senders(sender_id=None):
+    """Get all verified senders from SendGrid, or a single sender if sender_id is provided"""
+    if sender_id is not None:
+        try:
+            res = requests.get(f"{SENDGRID_BASE_URL}/senders/{sender_id}", headers=HEADERS)
+            _handle_response(res, f"Get sender {sender_id}")
+            sender = res.json()
+            logger.info(f"[SendGrid] Retrieved sender with ID {sender_id}")
+            return sender
+        except requests.RequestException as e:
+            logger.error(f"[SendGrid] Network error getting sender {sender_id}: {e}")
+            return None
+        except SendGridError:
+            logger.error(f"[SendGrid] API error getting sender {sender_id}")
+            return None
+    # Fallback: get all senders if no sender_id is provided
     try:
         res = requests.get(f"{SENDGRID_BASE_URL}/senders", headers=HEADERS)
         _handle_response(res, "Get senders")
-        
         senders = res.json()
         logger.info(f"[SendGrid] Retrieved {len(senders)} senders")
         return senders
-        
     except requests.RequestException as e:
         logger.error(f"[SendGrid] Network error getting senders: {e}")
         return []
@@ -290,3 +302,27 @@ def delete_sendgrid_list(list_id):
     except Exception as e:
         logger.error(f"[SendGrid] Error deleting list {list_id}: {e}")
         return False
+
+def remove_contact_from_list(email, list_id):
+    """Remove a contact from a SendGrid list by email and list_id"""
+    try:
+        # First, get the contact ID by email
+        search_url = f"{SENDGRID_BASE_URL}/marketing/contacts/search"
+        search_payload = {"query": f"email LIKE '{email}'"}
+        search_res = requests.post(search_url, headers=HEADERS, json=search_payload)
+        _handle_response(search_res, "Search contact by email")
+        contact_data = search_res.json()
+        contact_ids = [c["id"] for c in contact_data.get("result", []) if c["email"] == email]
+        if not contact_ids:
+            logger.warning(f"[SendGrid] No contact found for email {email}")
+            return False
+        contact_id = contact_ids[0]
+        # Remove the contact from the list (contact_ids as query param)
+        url = f"{SENDGRID_BASE_URL}/marketing/lists/{list_id}/contacts"
+        res = requests.delete(url, headers=HEADERS, params={"contact_ids": contact_id})
+        _handle_response(res, "Remove contact from list")
+        logger.info(f"[SendGrid] Removed contact {email} (ID: {contact_id}) from list {list_id}")
+        return True
+    except requests.RequestException as e:
+        logger.error(f"[SendGrid] Network error removing contact: {e}")
+        raise SendGridError(f"Network error removing contact: {e}")
