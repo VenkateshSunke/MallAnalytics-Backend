@@ -28,7 +28,7 @@ from django.utils.timezone import is_naive
 from datetime import timezone
 from io import BytesIO
 
-from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list
+from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
 
 # Helper to ensure body is wrapped in <html><body>...</body></html>
@@ -468,9 +468,16 @@ class BusinessHourListView(ListAPIView):
     serializer_class = BusinessHourSerializer
 
 
+class PageNumberWithSizePagination(PageNumberPagination):
+    def get_paginated_response(self, data):
+        response = super().get_paginated_response(data)
+        response.data['page_size'] = self.page.paginator.per_page
+        return response
+
 class EmailCampaignListCreateView(ListAPIView, CreateAPIView):
     queryset = EmailCampaign.objects.all()
     serializer_class = EmailCampaignSerializer
+    pagination_class = PageNumberWithSizePagination
 
     def perform_create(self, serializer):
         campaign = serializer.save()
@@ -579,7 +586,7 @@ class CampaignMinimalListView(ListAPIView):
 
 class CampaignContactListView(ListAPIView):
     serializer_class = CampaignContactSerializer
-
+    pagination_class = PageNumberWithSizePagination
     def get_queryset(self):
         campaign_id = self.kwargs['campaign_id']
         return CampaignContact.objects.filter(campaign__campaign_id=campaign_id)
@@ -614,7 +621,7 @@ class DashboardMetricsView(APIView):
 
 class CampaignStepListCreateView(ListCreateAPIView):
     serializer_class = CampaignStepSerializer
-    
+    pagination_class = None
     def get_queryset(self):
         campaign_id = self.kwargs['campaign_id']
         return CampaignStep.objects.filter(campaign__campaign_id=campaign_id).prefetch_related('images')
@@ -924,7 +931,12 @@ class ScheduleCampaignStepView(APIView):
 class SendGridSenderListView(APIView):
     def get(self, request):
         try:
-            senders = get_senders()
+            senders = get_senders(sender_id=7568598)
+            # Always return a list
+            if isinstance(senders, dict):
+                senders = [senders]
+            elif senders is None:
+                senders = []
             return Response(senders)
         except Exception as e:
             print(f"Failed to get SendGrid senders: {e}")
@@ -964,3 +976,22 @@ class CampaignStepSendGridStatsView(APIView):
             return Response(stats)
         except CampaignStep.DoesNotExist:
             return Response({'error': 'Step not found'}, status=404)
+
+class CampaignContactDeleteView(APIView):
+    def delete(self, request, campaign_id, user_id):
+        try:
+            contact = CampaignContact.objects.get(campaign__campaign_id=campaign_id, user__user_id=user_id)
+            email = contact.user.email
+            campaign = contact.campaign
+            sendgrid_list_id = campaign.sendgrid_list_id
+            contact.delete()
+            # Remove from SendGrid list if possible
+            if sendgrid_list_id and email:
+                try:
+                    remove_contact_from_list(email, sendgrid_list_id)
+                except Exception as e:
+                    # Log but don't fail the API if SendGrid removal fails
+                    print(f"Failed to remove contact from SendGrid: {e}")
+            return Response({'detail': 'Contact removed from campaign and SendGrid list.'}, status=status.HTTP_204_NO_CONTENT)
+        except CampaignContact.DoesNotExist:
+            return Response({'error': 'Contact not found in campaign.'}, status=status.HTTP_404_NOT_FOUND)
