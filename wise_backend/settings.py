@@ -25,7 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "django-insecure-friw+4ju8-k_drce@5e88icvhz#a0kl%i9c+25v+6)r&vdte66"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
@@ -41,7 +41,8 @@ INSTALLED_APPS = [
     "rest_framework",
     "core",
     "corsheaders",
-    "wise_backend.logs"
+    "wise_backend.logs",
+    "accounts",
 ]
 
 MIDDLEWARE = [
@@ -140,6 +141,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -197,3 +199,19 @@ CELERY_BROKER_URL = 'redis://localhost:6379/0'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
+
+# Auth0 Credentials
+AUTH0_DOMAIN = config("AUTH0_DOMAIN")
+AUTH0_CLIENT_ID = config("AUTH0_CLIENT_ID")
+AUTH0_CLIENT_SECRET = config("AUTH0_CLIENT_SECRET")
+AUTH0_AUDIENCE = config("AUTH0_AUDIENCE")
+AUTH0_ISSUER = config("AUTH0_ISSUER")
+
+
+AUTH_USER_MODEL = "accounts.VideoAgentUser"
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "accounts.authentication.Auth0JWTAuthentication",
+    )
+}

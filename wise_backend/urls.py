@@ -22,8 +22,12 @@ from django.conf.urls.static import static
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/', include('core.urls')),  # replace 'app' with your actual app name
+    path('accounts/', include('accounts.urls')),
 ]
 
 # Add media URL pattern in development
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Add static file serving
+urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
