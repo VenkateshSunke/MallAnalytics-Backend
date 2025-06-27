@@ -592,31 +592,86 @@ class CampaignContactListView(ListAPIView):
         return CampaignContact.objects.filter(campaign__campaign_id=campaign_id)
 
 class DashboardMetricsView(APIView):
-    def get(self, request):
-        now = dj_timezone.now()
-        seven_days_ago = now - timedelta(days=7)
-        total_visitors = User.objects.count()
-        active_users = User.objects.filter(
-            visits__start_time__isnull=False,
-            visits__end_time__isnull=True
-        ).distinct().count()
+    # def get(self, request):
+    #     now = dj_timezone.now()
+    #     seven_days_ago = now - timedelta(days=7)
+    #     total_visitors = User.objects.count()
+    #     active_users = User.objects.filter(
+    #         visits__start_time__isnull=False,
+    #         visits__end_time__isnull=True
+    #     ).distinct().count()
 
-        new_active_users = User.objects.filter(first_visit__gte=seven_days_ago).count()
-        avg_duration = Visit.objects.exclude(duration__isnull=True).aggregate(avg=Avg("duration"))["avg"]
+    #     new_active_users = User.objects.filter(first_visit__gte=seven_days_ago).count()
+    #     avg_duration = Visit.objects.exclude(duration__isnull=True).aggregate(avg=Avg("duration"))["avg"]
+
+    #     if avg_duration:
+    #         # Format timedelta to HH:MM:SS
+    #         hours, remainder = divmod(avg_duration.total_seconds(), 3600)
+    #         minutes, seconds = divmod(remainder, 60)
+    #         avg_visit_duration = f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
+    #     else:
+    #         avg_visit_duration = None
+
+    #     return Response({
+    #         "total_visitors": total_visitors,
+    #         "active_users": active_users,
+    #         "avg_visit_duration": avg_visit_duration,
+    #         "new_active_users": new_active_users
+    #     })
+    def get(self, request):
+        # Read `days` from query params (default to 30)
+        days = int(request.GET.get("days", 30))
+        now = dj_timezone.now()
+        days_ago = now - timedelta(days=days)
+
+        # Total users and new active users in given timeframe
+        # total_visitors = User.objects.count()
+        active_user_ids = User.objects.filter(
+            visits__start_time__gte=days_ago
+        ).distinct().values_list("user_id", flat=True)
+        total_visitors = len(active_user_ids)
+        new_active_users = User.objects.filter(first_visit__gte=days_ago).count()
+
+        # # Average visit duration from filtered visits
+        # avg_duration = Visit.objects.filter(start_time__gte=days_ago).exclude(duration__isnull=True).aggregate(
+        #     avg=Avg("duration")
+        # )["avg"]
+        # if avg_duration:
+        #     hours, remainder = divmod(avg_duration.total_seconds(), 3600)
+        #     minutes, _ = divmod(remainder, 60)
+        #     avg_visit_duration = f"{int(hours):02}:{int(minutes):02}"
+        # else:
+        #     avg_visit_duration = None
+        # ✅ Avg Visit Duration of visits in last N days
+        avg_duration = Visit.objects.filter(
+            start_time__gte=days_ago
+        ).exclude(duration__isnull=True).aggregate(
+            avg=Avg("duration")
+        )["avg"]
 
         if avg_duration:
-            # Format timedelta to HH:MM:SS
             hours, remainder = divmod(avg_duration.total_seconds(), 3600)
-            minutes, seconds = divmod(remainder, 60)
-            avg_visit_duration = f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
+            minutes, _ = divmod(remainder, 60)
+            avg_visit_duration = f"{int(hours):02}:{int(minutes):02}"
         else:
-            avg_visit_duration = None
+            avg_visit_duration = "00:00"
+
+        # 1. Get all distinct stores visited (store is not null)
+        distinct_stores = UserMovement.objects.filter(
+            visit__start_time__gte=days_ago,
+            store__isnull=False
+        ).values("store").distinct().count()
+        # 2. Total registered users
+        total_users = User.objects.count()
+
+        # 3. Final average
+        avg_stores_visited = distinct_stores / total_users if total_users else 0
 
         return Response({
             "total_visitors": total_visitors,
-            "active_users": active_users,
+            "new_active_users": new_active_users,
             "avg_visit_duration": avg_visit_duration,
-            "new_active_users": new_active_users
+            "avg_stores_visited": round(avg_stores_visited)
         })
 
 class CampaignStepListCreateView(ListCreateAPIView):
