@@ -27,9 +27,12 @@ import pytz
 from django.utils.timezone import is_naive
 from datetime import timezone
 from io import BytesIO
+from django.http import HttpResponse
+import csv
 
 from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
+from .utils.metrics import get_all_metrics
 
 # Helper to ensure body is wrapped in <html><body>...</body></html>
 def ensure_html_body(body):
@@ -117,7 +120,11 @@ class UserDetailView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = UserDetailWithVisitsSerializer(user)
-        return Response(serializer.data)
+        visits = list(user.visits.all())
+        metrics = get_all_metrics(visits)
+        data = serializer.data
+        data["metrics"] = metrics
+        return Response(data)
     def delete(self, request, user_id):
         try:
             user = User.objects.get(user_id=user_id)
@@ -1052,3 +1059,22 @@ class CampaignContactDeleteView(APIView):
             return Response({'detail': 'Contact removed from campaign and SendGrid list.'}, status=status.HTTP_204_NO_CONTENT)
         except CampaignContact.DoesNotExist:
             return Response({'error': 'Contact not found in campaign.'}, status=status.HTTP_404_NOT_FOUND)
+
+class ExportMovementsCSV(APIView):
+    def get(self, request, visit_id):
+        movements = UserMovement.objects.filter(visit_id=visit_id)
+        print(movements)
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="visit_{visit_id}_movements.csv"'
+        writer = csv.writer(response)
+        writer.writerow(['Camera ID', 'Start Time', 'End Time', 'Situation', 'Location', 'Store'])
+        for m in movements:
+            writer.writerow([
+                m.camera_id,
+                m.start_time,
+                m.end_time,
+                m.situation,
+                m.location,
+                m.store.store_name if m.store else '',
+            ])
+        return response
