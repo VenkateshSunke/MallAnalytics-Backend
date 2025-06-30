@@ -762,7 +762,8 @@ class CampaignStepListCreateView(ListCreateAPIView):
         # Get sender_id and suppression_group_id from request data
         request = self.request
         sender_id = request.data.get('sender_id') or get_default_sender_id()
-        suppression_group_id = request.data.get('suppression_group_id')
+        suppression_group_id = 121794
+        
         
         if sender_id and campaign.sendgrid_list_id:
             try:
@@ -937,7 +938,8 @@ class ScheduleCampaignStepView(APIView):
             except (ValueError, TypeError):
                 return Response({'error': 'Invalid sender ID format'}, status=400)
             
-            suppression_group_id = request.data.get('suppression_group_id')
+            # suppression_group_id = request.data.get('suppression_group_id')
+            suppression_group_id = 121794
             
             # Ensure campaign has SendGrid list
             if not campaign.sendgrid_list_id:
