@@ -70,6 +70,12 @@ class UserListView(APIView):
         last_visit = request.query_params.get('lastVisit')
         visits=request.query_params.get('visits')
         email = request.query_params.get('email')
+        interests = request.query_params.getlist('interests[]')  # handle multiple
+        pattern = request.query_params.get('pattern')
+        monthly_visits = request.query_params.get('monthlyVisits')
+        stores_visited_month = request.query_params.get('storesVisitedMonth')
+        last_visit_start = request.query_params.get('lastVisitStart')
+        last_visit_end = request.query_params.get('lastVisitEnd')
 
         users = User.objects.all().order_by('-created_at')
 
@@ -90,6 +96,17 @@ class UserListView(APIView):
                 users = users.filter(monthly_freq=int(monthly_freq))
             except ValueError:
                 pass
+        
+        if monthly_visits:
+            try:
+                users = users.filter(monthly_freq=int(monthly_visits))
+            except ValueError:
+                pass
+        if stores_visited_month:
+            try:
+                users = users.filter(stores_visited_month=int(stores_visited_month))
+            except ValueError:
+                pass
 
         if last_visit:
             try:
@@ -104,6 +121,21 @@ class UserListView(APIView):
                 users = users.filter(life_visits=int(visits))
             except ValueError:
                 pass
+        
+        # Interests (many-to-many relation filter)
+        if interests:
+            users = users.filter(interests__name__in=interests).distinct()
+        
+        # Last visit date range
+        if last_visit_start:
+            start_date = parse_date(last_visit_start)
+            if start_date:
+                users = users.filter(last_visit__gte=start_date)
+
+        if last_visit_end:
+            end_date = parse_date(last_visit_end)
+            if end_date:
+                users = users.filter(last_visit__lte=end_date)
         # Add more filters (e.g., store) as needed
 
         paginator = PageNumberPagination()

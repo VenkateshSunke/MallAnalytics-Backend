@@ -29,21 +29,28 @@ class VisitSummarySerializer(serializers.ModelSerializer):
 # --- SCREEN 2: USER + VISITS SERIALIZER ---
 class UserDetailWithVisitsSerializer(serializers.ModelSerializer):
     visits = VisitSummarySerializer(many=True, read_only=True)
+    user_selected_interests = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
-            'user_id', 'name', 'email', 'date_of_birth', 'address', 'cell_phone',
+            'user_id', 'name', 'email', 'date_of_birth', 'district', 'cell_phone',
             'picture_url',
             'monthly_visits', 'yearly_visits', 'life_visits',
             'avg_time_per_visit_year', 'avg_time_per_visit_life',
             'stores_visited_month', 'stores_visited_life',
             'first_visit', 'last_visit', 'recency', 'monthly_freq',
             'pattern_1', 'pattern_2', 'pattern_3',
-            'visits'
+            'visits','user_selected_interests','created_at'
         ]
+    def get_user_selected_interests(self, obj):
+        user_interests = UserInterest.objects.filter(user=obj, source='registration')
+        return InterestSerializer([ui.interest for ui in user_interests], many=True).data
 
 class UserCreateSerializer(serializers.ModelSerializer):
+    user_selected_interests = serializers.ListField(
+        child=serializers.UUIDField(), write_only=True, required=False
+    )
     name = serializers.CharField(
         max_length=100,
         required=True,
@@ -57,7 +64,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         required=True,
         error_messages={"invalid": "Enter a valid date in YYYY-MM-DD format."}
     )
-    address = serializers.CharField(required=True, allow_blank=False)
+    district = serializers.CharField(required=True, allow_blank=False)
     cell_phone = serializers.CharField(
         required=True,
         validators=[RegexValidator(r'^\+?\d{10,15}$', message="Enter a valid phone number.")]
@@ -69,13 +76,26 @@ class UserCreateSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'user_id', 'name', 'email', 'date_of_birth',
-            'address', 'cell_phone', 'picture_url','face_id'
+            'district', 'cell_phone', 'picture_url','face_id','user_selected_interests'
         ]
 
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("A user with this email already exists.")
         return value
+    def create(self, validated_data):
+        interests = validated_data.pop("user_selected_interests", [])
+        user = User.objects.create(**validated_data)
+
+        # Create UserInterest records
+        for interest_id in interests:
+            UserInterest.objects.create(
+                user=user,
+                interest_id=interest_id,
+                source="registration"
+            )
+        return user
+
 
 
 # --- USER SERIALIZER ---
