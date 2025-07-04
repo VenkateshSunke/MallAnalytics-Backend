@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, serializers
 from .models import *
 from .serializers import *
 from shapely import wkt
@@ -29,10 +29,11 @@ from datetime import timezone
 from io import BytesIO
 from django.http import HttpResponse
 import csv
-
+from rest_framework.permissions import AllowAny
 from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
 from .utils.metrics import get_all_metrics
+from django.utils.dateparse import parse_date
 
 # Helper to ensure body is wrapped in <html><body>...</body></html>
 def ensure_html_body(body):
@@ -320,19 +321,73 @@ class MovementByVisitView(APIView):
         movements = UserMovement.objects.filter(visit_id=visit_id)
         return Response(UserMovementSerializer(movements, many=True).data)
 
-class CreateListStoreView(APIView):
-    def post(self, request):
-        serializer = StoreSerializer(data=request.data)
-        if serializer.is_valid():
-            if MallStore.objects.filter(store_code=serializer.validated_data['store_code']).exists():
-                return Response({"detail": "Store already exists"}, status=400)
-            serializer.save()
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+class CreateListStoreView(ListCreateAPIView):
+    serializer_class = MallStoreSerializer
+    pagination_class = PageNumberPagination
+    
+    def get_queryset(self):
+        stores = MallStore.objects.all().order_by('store_code')
+        
+        # Apply filters
+        search = self.request.GET.get('search', '')
+        if search:
+            stores = stores.filter(
+                Q(store_name__icontains=search) | 
+                Q(store_code__icontains=search) |
+                Q(pattern_characterstic_1__icontains=search)
+            )
+        
+        store_name = self.request.GET.get('store_name', '')
+        if store_name:
+            stores = stores.filter(store_name__icontains=store_name)
+            
+        category = self.request.GET.get('category', '')
+        if category:
+            stores = stores.filter(pattern_characterstic_1__icontains=category)
+            
+        price_level = self.request.GET.get('price_level', '')
+        if price_level:
+            stores = stores.filter(pattern_characterstic_2=price_level)
+            
+        footfall_type = self.request.GET.get('footfall_type', '')
+        if footfall_type:
+            stores = stores.filter(pattern_characterstic_3=footfall_type)
+        
+        return stores
+    
+    def perform_create(self, serializer):
+        # Check if store already exists
+        store_code = serializer.validated_data.get('store_code')
+        if MallStore.objects.filter(store_code=store_code).exists():
+            raise serializers.ValidationError({"detail": "Store already exists"})
+        serializer.save()
 
-    def get(self, request):
-        stores = MallStore.objects.all()
-        return Response(StoreSerializer(stores, many=True).data)
+class StoreDetailView(APIView):
+    def get(self, request, store_code):
+        try:
+            store = MallStore.objects.get(store_code=store_code)
+            return Response(MallStoreSerializer(store).data)
+        except MallStore.DoesNotExist:
+            return Response({"detail": "Store not found"}, status=404)
+    
+    def put(self, request, store_code):
+        try:
+            store = MallStore.objects.get(store_code=store_code)
+            serializer = MallStoreSerializer(store, data=request.data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=400)
+        except MallStore.DoesNotExist:
+            return Response({"detail": "Store not found"}, status=404)
+    
+    def delete(self, request, store_code):
+        try:
+            store = MallStore.objects.get(store_code=store_code)
+            store.delete()
+            return Response({"detail": "Store deleted successfully"}, status=204)
+        except MallStore.DoesNotExist:
+            return Response({"detail": "Store not found"}, status=404)
 
 class CreateListInterestView(APIView):
     def post(self, request):
@@ -370,6 +425,7 @@ class GetUserInterestsView(APIView):
 
 class uploadPhotoView(APIView):
     parser_classes = [MultiPartParser]
+    permission_classes = [AllowAny]
 
     # def post(self, request):
     #     photo = request.FILES.get('photo')
