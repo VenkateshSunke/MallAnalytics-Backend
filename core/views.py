@@ -94,18 +94,18 @@ class UserListView(APIView):
 
         if monthly_freq:
             try:
-                users = users.filter(monthly_freq=int(monthly_freq))
+                users = users.filter(monthly_freq__gte=int(monthly_freq))
             except ValueError:
                 pass
         
         if monthly_visits:
             try:
-                users = users.filter(monthly_freq=int(monthly_visits))
+                users = users.filter(monthly_freq__gte=int(monthly_visits))
             except ValueError:
                 pass
         if stores_visited_month:
             try:
-                users = users.filter(stores_visited_month=int(stores_visited_month))
+                users = users.filter(stores_visited_month__gte=int(stores_visited_month))
             except ValueError:
                 pass
 
@@ -119,7 +119,7 @@ class UserListView(APIView):
         
         if visits:
             try:
-                users = users.filter(life_visits=int(visits))
+                users = users.filter(life_visits__gte=int(visits))
             except ValueError:
                 pass
         
