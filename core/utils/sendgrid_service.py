@@ -326,3 +326,20 @@ def remove_contact_from_list(email, list_id):
     except requests.RequestException as e:
         logger.error(f"[SendGrid] Network error removing contact: {e}")
         raise SendGridError(f"Network error removing contact: {e}")
+
+def delete_campaign_steps_in_sendgrid(steps):
+    """Delete multiple SendGrid campaigns for a list of steps"""
+    results = []
+    for step in steps:
+        if step.sendgrid_campaign_id:
+            success = delete_sendgrid_campaign(step.sendgrid_campaign_id)
+            results.append({
+                'step_id': step.id,
+                'sendgrid_campaign_id': step.sendgrid_campaign_id,
+                'deleted': success
+            })
+            if success:
+                # Clear the sendgrid_campaign_id from the step
+                step.sendgrid_campaign_id = None
+                step.save()
+    return results

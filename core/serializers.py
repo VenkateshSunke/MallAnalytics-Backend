@@ -241,7 +241,7 @@ class CampaignStepSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = CampaignStep
-        fields = ['id', 'step_order', 'subject', 'body', 'send_at', 'sendgrid_campaign_id', 'images', 'image_files']
+        fields = ['id', 'step_order', 'subject', 'body', 'send_at', 'sendgrid_campaign_id', 'is_active', 'images', 'image_files']
         read_only_fields = ['sendgrid_campaign_id']
 
     def create(self, validated_data):

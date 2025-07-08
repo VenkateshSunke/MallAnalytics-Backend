@@ -30,7 +30,7 @@ from io import BytesIO
 from django.http import HttpResponse
 import csv
 from rest_framework.permissions import AllowAny
-from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list
+from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list, delete_campaign_steps_in_sendgrid
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
 from .utils.metrics import get_all_metrics
 from django.utils.dateparse import parse_date
@@ -635,11 +635,92 @@ class EmailCampaignToggleView(APIView):
     def patch(self, request, campaign_id):
         try:
             campaign = EmailCampaign.objects.get(pk=campaign_id)
-            campaign.is_active = request.data.get('is_active', campaign.is_active)
+            new_status = request.data.get('is_active', campaign.is_active)
+            old_status = campaign.is_active
+            
+            # Update campaign status
+            campaign.is_active = new_status
             campaign.save()
-            return Response({'status': 'updated', 'is_active': campaign.is_active})
+            
+            # Handle SendGrid campaigns for all steps
+            sendgrid_results = []
+            if old_status != new_status:  # Only if status actually changed
+                try:
+                    if new_status:
+                        # Enabling campaign - recreate SendGrid campaigns for valid steps
+                        for step in campaign.steps.all():
+                            if not step.sendgrid_campaign_id and step.subject and step.body and campaign.sendgrid_list_id:
+                                try:
+                                    sender_id = get_default_sender_id()
+                                    if sender_id:
+                                        sendgrid_id = create_sendgrid_campaign(step, sender_id)
+                                        if sendgrid_id:
+                                            step.sendgrid_campaign_id = sendgrid_id
+                                            step.save()
+                                            sendgrid_results.append({'step_id': step.id, 'action': 'created', 'sendgrid_campaign_id': sendgrid_id})
+                                except Exception as e:
+                                    sendgrid_results.append({'step_id': step.id, 'action': 'create_failed', 'error': str(e)})
+                    else:
+                        # Disabling campaign - delete all SendGrid campaigns
+                        steps_with_sendgrid = campaign.steps.filter(sendgrid_campaign_id__isnull=False)
+                        if steps_with_sendgrid.exists():
+                            sendgrid_results = delete_campaign_steps_in_sendgrid(steps_with_sendgrid)
+                except Exception as e:
+                    print(f"Error managing SendGrid campaigns for campaign {campaign_id}: {e}")
+            
+            response_data = {'status': 'updated', 'is_active': campaign.is_active}
+            if sendgrid_results:
+                response_data['sendgrid_results'] = sendgrid_results
+                
+            return Response(response_data)
         except EmailCampaign.DoesNotExist:
             return Response({'error': 'Not found'}, status=404)
+
+
+class CampaignStepToggleView(APIView):
+    def patch(self, request, campaign_id, step_id):
+        try:
+            step = CampaignStep.objects.get(pk=step_id, campaign__campaign_id=campaign_id)
+            new_status = request.data.get('is_active', step.is_active)
+            old_status = step.is_active
+            
+            # Update step status
+            step.is_active = new_status
+            step.save()
+            
+            # Handle SendGrid campaign for this step
+            sendgrid_result = None
+            if old_status != new_status:  # Only if status actually changed
+                try:
+                    if new_status:
+                        # Enabling step - create SendGrid campaign if needed
+                        if not step.sendgrid_campaign_id and step.subject and step.body and step.campaign.sendgrid_list_id:
+                            sender_id = get_default_sender_id()
+                            if sender_id:
+                                sendgrid_id = create_sendgrid_campaign(step, sender_id)
+                                if sendgrid_id:
+                                    step.sendgrid_campaign_id = sendgrid_id
+                                    step.save()
+                                    sendgrid_result = {'action': 'created', 'sendgrid_campaign_id': sendgrid_id}
+                    else:
+                        # Disabling step - delete SendGrid campaign if it exists
+                        if step.sendgrid_campaign_id:
+                            success = delete_sendgrid_campaign(step.sendgrid_campaign_id)
+                            if success:
+                                old_campaign_id = step.sendgrid_campaign_id
+                                step.sendgrid_campaign_id = None
+                                step.save()
+                                sendgrid_result = {'action': 'deleted', 'sendgrid_campaign_id': old_campaign_id}
+                except Exception as e:
+                    sendgrid_result = {'action': 'failed', 'error': str(e)}
+            
+            response_data = {'status': 'updated', 'is_active': step.is_active}
+            if sendgrid_result:
+                response_data['sendgrid_result'] = sendgrid_result
+                
+            return Response(response_data)
+        except CampaignStep.DoesNotExist:
+            return Response({'error': 'Step not found'}, status=404)
 
 
 class AddCampaignContactsView(APIView):
@@ -875,6 +956,7 @@ class CampaignStepListCreateView(ListCreateAPIView):
                 sendgrid_campaign_id = create_sendgrid_campaign(step, sender_id, suppression_group_id)
                 if sendgrid_campaign_id:
                     step.sendgrid_campaign_id = sendgrid_campaign_id
+                    step.is_active = True
                     step.save()
                     print(f"Created SendGrid campaign {sendgrid_campaign_id} for step {step.id}")
                     # Schedule the campaign immediately if send_at is set

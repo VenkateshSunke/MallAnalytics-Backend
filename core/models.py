@@ -162,6 +162,7 @@ class CampaignStep(models.Model):
     send_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     sendgrid_campaign_id = models.CharField(max_length=100, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ['step_order']

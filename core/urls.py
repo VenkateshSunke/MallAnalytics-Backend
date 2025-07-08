@@ -30,6 +30,7 @@ urlpatterns = [
     path('campaigns/', views.EmailCampaignListCreateView.as_view(), name='campaign-list-create'),
     path('campaigns/<int:campaign_id>/', views.EmailCampaignDetailView.as_view(), name='campaign-detail'),
     path('campaigns/<int:campaign_id>/toggle/', views.EmailCampaignToggleView.as_view(), name='campaign-toggle'),
+    path('campaigns/<int:campaign_id>/steps/<int:step_id>/toggle/', views.CampaignStepToggleView.as_view(), name='campaign-step-toggle'),
     path('campaigns/<int:campaign_id>/add-contacts/', views.AddCampaignContactsView.as_view(), name='campaign-add-contacts'),
     path('campaigns/minimal/', views.CampaignMinimalListView.as_view(), name='campaign-minimal'),
     path('campaigns/<int:campaign_id>/contacts/', views.CampaignContactListView.as_view(), name='campaign-contacts'),
