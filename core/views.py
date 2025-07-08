@@ -334,7 +334,10 @@ class CreateListStoreView(ListCreateAPIView):
             stores = stores.filter(
                 Q(store_name__icontains=search) | 
                 Q(store_code__icontains=search) |
-                Q(pattern_characterstic_1__icontains=search)
+                Q(store_number__icontains=search) |
+                Q(pattern_characterstic_1__icontains=search) |
+                Q(pattern_characterstic_2__icontains=search) |
+                Q(pattern_characterstic_3__icontains=search)
             )
         
         store_name = self.request.GET.get('store_name', '')
@@ -345,14 +348,17 @@ class CreateListStoreView(ListCreateAPIView):
         if category:
             stores = stores.filter(pattern_characterstic_1__icontains=category)
             
-        price_level = self.request.GET.get('price_level', '')
-        if price_level:
-            stores = stores.filter(pattern_characterstic_2=price_level)
+        sub_category = self.request.GET.get('subcategory', '')
+        if sub_category:
+            stores = stores.filter(pattern_characterstic_2__icontains=sub_category)
             
-        footfall_type = self.request.GET.get('footfall_type', '')
-        if footfall_type:
-            stores = stores.filter(pattern_characterstic_3=footfall_type)
+        store_number = self.request.GET.get('store_number', '')
+        if store_number:
+            stores = stores.filter(store_number__icontains=store_number)
         
+        pattern_characterstic_3 = self.request.GET.get('pattern_characterstic_3', '')
+        if pattern_characterstic_3:
+            stores = stores.filter(pattern_characterstic_3__icontains=pattern_characterstic_3)
         return stores
     
     def perform_create(self, serializer):

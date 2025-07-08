@@ -62,6 +62,7 @@ class Visit(models.Model):
 # --- MALL STORES ---
 class MallStore(models.Model):
     store_code = models.CharField(max_length=255, primary_key=True)
+    store_number = models.CharField(max_length=255, null=True, blank=True)
     store_name = models.CharField(max_length=255)
     pattern_characterstic_1 = models.CharField(max_length=255, null=True, blank=True)
     pattern_characterstic_2 = models.CharField(max_length=255, null=True, blank=True)
