@@ -75,7 +75,7 @@ class UserListView(APIView):
         last_visit = request.query_params.get('lastVisit')
         visits=request.query_params.get('visits')
         email = request.query_params.get('email')
-        interests = request.query_params.getlist('interests[]')  # handle multiple
+        interests = request.query_params.getlist('interests')  # handle multiple
         pattern = request.query_params.get('pattern')
         monthly_visits = request.query_params.get('monthlyVisits')
         stores_visited_month = request.query_params.get('storesVisitedMonth')
@@ -129,7 +129,7 @@ class UserListView(APIView):
         
         # Interests (many-to-many relation filter)
         if interests:
-            users = users.filter(interests__name__in=interests).distinct()
+            users = users.filter(interests__interest__name__in=interests).distinct()
         
         # Last visit date range
         if last_visit_start:
