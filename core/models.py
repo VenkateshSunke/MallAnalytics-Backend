@@ -62,6 +62,7 @@ class Visit(models.Model):
 # --- MALL STORES ---
 class MallStore(models.Model):
     store_code = models.CharField(max_length=255, primary_key=True)
+    store_number = models.CharField(max_length=255, null=True, blank=True)
     store_name = models.CharField(max_length=255)
     pattern_characterstic_1 = models.CharField(max_length=255, null=True, blank=True)
     pattern_characterstic_2 = models.CharField(max_length=255, null=True, blank=True)
@@ -161,6 +162,7 @@ class CampaignStep(models.Model):
     send_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     sendgrid_campaign_id = models.CharField(max_length=100, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ['step_order']

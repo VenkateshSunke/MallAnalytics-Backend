@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "accounts",
     "wise_backend.logs",  # Add the logs app
+    "django_extensions",
 ]
 
 MIDDLEWARE = [

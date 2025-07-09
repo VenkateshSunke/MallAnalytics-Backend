@@ -275,6 +275,64 @@ def get_campaign_stats(campaign_id):
         logger.error(f"[SendGrid] Error getting campaign stats: {e}")
         return None
 
+def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=121794):
+    """Update an existing SendGrid campaign with new content"""
+    try:
+        # Validate required fields
+        if not step.subject or not step.subject.strip():
+            raise SendGridError("Campaign subject cannot be empty")
+        
+        if not step.body or not step.body.strip():
+            raise SendGridError("Campaign body cannot be empty")
+        
+        # Validate and clean HTML content
+        validated_html = validate_html_content(step.body)
+        
+        # Create campaign name with timestamp to ensure uniqueness
+        campaign_name = f"{step.campaign.name} - Step {step.step_order} - {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        data = {
+            "name": campaign_name,
+            "categories": [f"campaign_{getattr(step.campaign, 'campaign_id', 'unknown')}", f"step_{step.id}"],
+            "send_to": {
+                "list_ids": [step.campaign.sendgrid_list_id]
+            },
+            "email_config": {
+                "subject": step.subject.strip(),
+                "html_content": validated_html,
+                "sender_id": int(sender_id),
+                "editor": "code"
+            }
+        }
+        
+        # Only add suppression_group_id if it's provided and valid
+        if suppression_group_id is not None and suppression_group_id != "":
+            logger.info(f"Suppression group received: {suppression_group_id} (type: {type(suppression_group_id)})")
+            try:
+                data["email_config"]["suppression_group_id"] = int(suppression_group_id)
+            except (ValueError, TypeError):
+                logger.warning(f"[SendGrid] Invalid suppression_group_id: {suppression_group_id}")
+
+        logger.info(f"[SendGrid] Updating campaign {campaign_id} with data: {data}")
+        
+        res = requests.put(
+            f"{SENDGRID_BASE_URL}/marketing/singlesends/{campaign_id}", 
+            headers=HEADERS, 
+            json=data
+        )
+        
+        logger.info(f"[SendGrid] Campaign update response: {res.status_code} - {res.text}")
+        _handle_response(res, "Update campaign")
+        
+        response_data = res.json()
+        logger.info(f"[SendGrid] Updated campaign '{campaign_name}' with ID: {campaign_id}")
+        
+        return response_data
+        
+    except requests.RequestException as e:
+        logger.error(f"[SendGrid] Network error updating campaign: {e}")
+        raise SendGridError(f"Network error updating campaign: {e}")
+
 def delete_sendgrid_campaign(campaign_id):
     """Delete a SendGrid Single Send campaign by its ID."""
     try:
@@ -326,3 +384,20 @@ def remove_contact_from_list(email, list_id):
     except requests.RequestException as e:
         logger.error(f"[SendGrid] Network error removing contact: {e}")
         raise SendGridError(f"Network error removing contact: {e}")
+
+def delete_campaign_steps_in_sendgrid(steps):
+    """Delete multiple SendGrid campaigns for a list of steps"""
+    results = []
+    for step in steps:
+        if step.sendgrid_campaign_id:
+            success = delete_sendgrid_campaign(step.sendgrid_campaign_id)
+            results.append({
+                'step_id': step.id,
+                'sendgrid_campaign_id': step.sendgrid_campaign_id,
+                'deleted': success
+            })
+            if success:
+                # Clear the sendgrid_campaign_id from the step
+                step.sendgrid_campaign_id = None
+                step.save()
+    return results

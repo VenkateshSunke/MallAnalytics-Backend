@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, serializers
 from .models import *
 from .serializers import *
 from shapely import wkt
@@ -29,11 +29,16 @@ from datetime import timezone
 from io import BytesIO
 from django.http import HttpResponse
 import csv
-import time
+from rest_framework.permissions import AllowAnyimport time
 
-from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list
+from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list, delete_campaign_steps_in_sendgrid, update_sendgrid_campaign
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
 from .utils.metrics import get_all_metrics
+from django.utils.dateparse import parse_date
+from django.utils.timezone import is_naive
+import pytz
+from django.utils import timezone
+from io import BytesIO
 
 # Helper to ensure body is wrapped in <html><body>...</body></html>
 def ensure_html_body(body):
@@ -71,7 +76,7 @@ class UserListView(APIView):
         last_visit = request.query_params.get('lastVisit')
         visits=request.query_params.get('visits')
         email = request.query_params.get('email')
-        interests = request.query_params.getlist('interests[]')  # handle multiple
+        interests = request.query_params.getlist('interests')  # handle multiple
         pattern = request.query_params.get('pattern')
         monthly_visits = request.query_params.get('monthlyVisits')
         stores_visited_month = request.query_params.get('storesVisitedMonth')
@@ -94,18 +99,18 @@ class UserListView(APIView):
 
         if monthly_freq:
             try:
-                users = users.filter(monthly_freq=int(monthly_freq))
+                users = users.filter(monthly_freq__gte=int(monthly_freq))
             except ValueError:
                 pass
         
         if monthly_visits:
             try:
-                users = users.filter(monthly_freq=int(monthly_visits))
+                users = users.filter(monthly_freq__gte=int(monthly_visits))
             except ValueError:
                 pass
         if stores_visited_month:
             try:
-                users = users.filter(stores_visited_month=int(stores_visited_month))
+                users = users.filter(stores_visited_month__gte=int(stores_visited_month))
             except ValueError:
                 pass
 
@@ -119,13 +124,13 @@ class UserListView(APIView):
         
         if visits:
             try:
-                users = users.filter(life_visits=int(visits))
+                users = users.filter(life_visits__gte=int(visits))
             except ValueError:
                 pass
         
         # Interests (many-to-many relation filter)
         if interests:
-            users = users.filter(interests__name__in=interests).distinct()
+            users = users.filter(interests__interest__name__in=interests).distinct()
         
         # Last visit date range
         if last_visit_start:
@@ -321,19 +326,79 @@ class MovementByVisitView(APIView):
         movements = UserMovement.objects.filter(visit_id=visit_id)
         return Response(UserMovementSerializer(movements, many=True).data)
 
-class CreateListStoreView(APIView):
-    def post(self, request):
-        serializer = StoreSerializer(data=request.data)
-        if serializer.is_valid():
-            if MallStore.objects.filter(store_code=serializer.validated_data['store_code']).exists():
-                return Response({"detail": "Store already exists"}, status=400)
-            serializer.save()
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+class CreateListStoreView(ListCreateAPIView):
+    serializer_class = MallStoreSerializer
+    pagination_class = PageNumberPagination
+    
+    def get_queryset(self):
+        stores = MallStore.objects.all().order_by('store_code')
+        
+        # Apply filters
+        search = self.request.GET.get('search', '')
+        if search:
+            stores = stores.filter(
+                Q(store_name__icontains=search) | 
+                Q(store_code__icontains=search) |
+                Q(store_number__icontains=search) |
+                Q(pattern_characterstic_1__icontains=search) |
+                Q(pattern_characterstic_2__icontains=search) |
+                Q(pattern_characterstic_3__icontains=search)
+            )
+        
+        store_name = self.request.GET.get('store_name', '')
+        if store_name:
+            stores = stores.filter(store_name__icontains=store_name)
+            
+        category = self.request.GET.get('category', '')
+        if category:
+            stores = stores.filter(pattern_characterstic_1__icontains=category)
+            
+        sub_category = self.request.GET.get('subcategory', '')
+        if sub_category:
+            stores = stores.filter(pattern_characterstic_2__icontains=sub_category)
+            
+        store_number = self.request.GET.get('store_number', '')
+        if store_number:
+            stores = stores.filter(store_number__icontains=store_number)
+        
+        pattern_characterstic_3 = self.request.GET.get('pattern_characterstic_3', '')
+        if pattern_characterstic_3:
+            stores = stores.filter(pattern_characterstic_3__icontains=pattern_characterstic_3)
+        return stores
+    
+    def perform_create(self, serializer):
+        # Check if store already exists
+        store_code = serializer.validated_data.get('store_code')
+        if MallStore.objects.filter(store_code=store_code).exists():
+            raise serializers.ValidationError({"detail": "Store already exists"})
+        serializer.save()
 
-    def get(self, request):
-        stores = MallStore.objects.all()
-        return Response(StoreSerializer(stores, many=True).data)
+class StoreDetailView(APIView):
+    def get(self, request, store_code):
+        try:
+            store = MallStore.objects.get(store_code=store_code)
+            return Response(MallStoreSerializer(store).data)
+        except MallStore.DoesNotExist:
+            return Response({"detail": "Store not found"}, status=404)
+    
+    def put(self, request, store_code):
+        try:
+            store = MallStore.objects.get(store_code=store_code)
+            serializer = MallStoreSerializer(store, data=request.data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=400)
+        except MallStore.DoesNotExist:
+            return Response({"detail": "Store not found"}, status=404)
+    
+    def delete(self, request, store_code):
+        try:
+            store = MallStore.objects.get(store_code=store_code)
+            store.delete()
+            return Response({"detail": "Store deleted successfully"}, status=204)
+        except MallStore.DoesNotExist:
+            return Response({"detail": "Store not found"}, status=404)
 
 class CreateListInterestView(APIView):
     def post(self, request):
@@ -371,6 +436,7 @@ class GetUserInterestsView(APIView):
 
 class uploadPhotoView(APIView):
     parser_classes = [MultiPartParser]
+    permission_classes = [AllowAny]
 
     def post(self, request):
         photo = request.FILES.get('photo')
@@ -525,11 +591,92 @@ class EmailCampaignToggleView(APIView):
     def patch(self, request, campaign_id):
         try:
             campaign = EmailCampaign.objects.get(pk=campaign_id)
-            campaign.is_active = request.data.get('is_active', campaign.is_active)
+            new_status = request.data.get('is_active', campaign.is_active)
+            old_status = campaign.is_active
+            
+            # Update campaign status
+            campaign.is_active = new_status
             campaign.save()
-            return Response({'status': 'updated', 'is_active': campaign.is_active})
+            
+            # Handle SendGrid campaigns for all steps
+            sendgrid_results = []
+            if old_status != new_status:  # Only if status actually changed
+                try:
+                    if new_status:
+                        # Enabling campaign - recreate SendGrid campaigns for valid steps
+                        for step in campaign.steps.all():
+                            if not step.sendgrid_campaign_id and step.subject and step.body and campaign.sendgrid_list_id:
+                                try:
+                                    sender_id = get_default_sender_id()
+                                    if sender_id:
+                                        sendgrid_id = create_sendgrid_campaign(step, sender_id)
+                                        if sendgrid_id:
+                                            step.sendgrid_campaign_id = sendgrid_id
+                                            step.save()
+                                            sendgrid_results.append({'step_id': step.id, 'action': 'created', 'sendgrid_campaign_id': sendgrid_id})
+                                except Exception as e:
+                                    sendgrid_results.append({'step_id': step.id, 'action': 'create_failed', 'error': str(e)})
+                    else:
+                        # Disabling campaign - delete all SendGrid campaigns
+                        steps_with_sendgrid = campaign.steps.filter(sendgrid_campaign_id__isnull=False)
+                        if steps_with_sendgrid.exists():
+                            sendgrid_results = delete_campaign_steps_in_sendgrid(steps_with_sendgrid)
+                except Exception as e:
+                    print(f"Error managing SendGrid campaigns for campaign {campaign_id}: {e}")
+            
+            response_data = {'status': 'updated', 'is_active': campaign.is_active}
+            if sendgrid_results:
+                response_data['sendgrid_results'] = sendgrid_results
+                
+            return Response(response_data)
         except EmailCampaign.DoesNotExist:
             return Response({'error': 'Not found'}, status=404)
+
+
+class CampaignStepToggleView(APIView):
+    def patch(self, request, campaign_id, step_id):
+        try:
+            step = CampaignStep.objects.get(pk=step_id, campaign__campaign_id=campaign_id)
+            new_status = request.data.get('is_active', step.is_active)
+            old_status = step.is_active
+            
+            # Update step status
+            step.is_active = new_status
+            step.save()
+            
+            # Handle SendGrid campaign for this step
+            sendgrid_result = None
+            if old_status != new_status:  # Only if status actually changed
+                try:
+                    if new_status:
+                        # Enabling step - create SendGrid campaign if needed
+                        if not step.sendgrid_campaign_id and step.subject and step.body and step.campaign.sendgrid_list_id:
+                            sender_id = get_default_sender_id()
+                            if sender_id:
+                                sendgrid_id = create_sendgrid_campaign(step, sender_id)
+                                if sendgrid_id:
+                                    step.sendgrid_campaign_id = sendgrid_id
+                                    step.save()
+                                    sendgrid_result = {'action': 'created', 'sendgrid_campaign_id': sendgrid_id}
+                    else:
+                        # Disabling step - delete SendGrid campaign if it exists
+                        if step.sendgrid_campaign_id:
+                            success = delete_sendgrid_campaign(step.sendgrid_campaign_id)
+                            if success:
+                                old_campaign_id = step.sendgrid_campaign_id
+                                step.sendgrid_campaign_id = None
+                                step.save()
+                                sendgrid_result = {'action': 'deleted', 'sendgrid_campaign_id': old_campaign_id}
+                except Exception as e:
+                    sendgrid_result = {'action': 'failed', 'error': str(e)}
+            
+            response_data = {'status': 'updated', 'is_active': step.is_active}
+            if sendgrid_result:
+                response_data['sendgrid_result'] = sendgrid_result
+                
+            return Response(response_data)
+        except CampaignStep.DoesNotExist:
+            return Response({'error': 'Step not found'}, status=404)
 
 
 class AddCampaignContactsView(APIView):
@@ -765,6 +912,7 @@ class CampaignStepListCreateView(ListCreateAPIView):
                 sendgrid_campaign_id = create_sendgrid_campaign(step, sender_id, suppression_group_id)
                 if sendgrid_campaign_id:
                     step.sendgrid_campaign_id = sendgrid_campaign_id
+                    step.is_active = True
                     step.save()
                     print(f"Created SendGrid campaign {sendgrid_campaign_id} for step {step.id}")
                     # Schedule the campaign immediately if send_at is set
@@ -792,6 +940,105 @@ class CampaignStepDetailView(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return CampaignStep.objects.prefetch_related('images')
+    
+    def update(self, request, *args, **kwargs):
+        """Handle step updates with SendGrid campaign updates and image handling"""
+        instance = self.get_object()
+        
+        # Handle image uploads
+        image_files = request.FILES.getlist('image_files', [])
+        uploaded_images = []
+        
+        if image_files:
+            s3_service = S3ImageService()
+            for i, image_file in enumerate(image_files):
+                try:
+                    # Read file into bytes once
+                    image_file.seek(0)
+                    file_bytes = image_file.read()
+                    # For S3 upload, create a new BytesIO each time
+                    file_copy = BytesIO(file_bytes)
+                    file_copy.name = image_file.name
+                    file_copy.content_type = getattr(image_file, 'content_type', 'application/octet-stream')
+                    image_data = s3_service.upload_image(
+                        file_copy,
+                        campaign_id=instance.campaign.campaign_id,
+                        step_id=instance.id
+                    )
+                    uploaded_images.append({
+                        'data': image_data,
+                        'order': instance.images.count() + i,
+                        'file': file_copy
+                    })
+                except Exception as e:
+                    print(f"Failed to upload image {image_file.name}: {e}")
+                    # Continue with other images
+        
+        # Update the step using the parent method
+        response = super().update(request, *args, **kwargs)
+        updated_instance = self.get_object()  # Get the updated instance
+        
+        # Create image records and update step body with embedded images
+        if uploaded_images:
+            image_urls = []
+            for img_info in uploaded_images:
+                # Create image record
+                step_image = CampaignStepImage.objects.create(
+                    step=updated_instance,
+                    s3_key=img_info['data']['s3_key'],
+                    s3_url=img_info['data']['url'],
+                    original_filename=img_info['data']['filename'],
+                    content_type=img_info['data']['content_type'],
+                    file_size=img_info['data']['size'],
+                    upload_order=img_info['order']
+                )
+                image_urls.append(img_info['data']['url'])
+            
+            # Auto-embed images in HTML content if needed
+            if updated_instance.body:
+                safe_body = ensure_html_body(updated_instance.body)
+                updated_body = auto_embed_images_in_html(safe_body, [img['data'] for img in uploaded_images])
+                updated_instance.body = updated_body
+                updated_instance.save()
+        
+        # Update SendGrid campaign if it exists
+        if updated_instance.sendgrid_campaign_id:
+            # Get sender_id from request data or use existing/default
+            sender_id = request.data.get('sender_id') or get_default_sender_id()
+            suppression_group_id = 121794
+            
+            if sender_id and updated_instance.campaign.sendgrid_list_id:
+                try:
+                    # Validate sender_id
+                    if not str(sender_id).isdigit():
+                        print(f"Invalid sender_id: {sender_id}")
+                    else:
+                        update_sendgrid_campaign(
+                            updated_instance.sendgrid_campaign_id,
+                            updated_instance,
+                            sender_id,
+                            suppression_group_id
+                        )
+                        print(f"Updated SendGrid campaign {updated_instance.sendgrid_campaign_id} for step {updated_instance.id}")
+                        
+                        # If send_at has changed, reschedule the campaign
+                        if updated_instance.send_at:
+                            try:
+                                send_at = updated_instance.send_at
+                                if is_naive(send_at):
+                                    local_tz = pytz.timezone('Asia/Kolkata')
+                                    send_at = local_tz.localize(send_at)
+                                send_at_utc = send_at.astimezone(timezone.utc)
+                                print(f"Rescheduling SendGrid campaign {updated_instance.sendgrid_campaign_id}: original send_at={updated_instance.send_at}, UTC={send_at_utc}")
+                                schedule_sendgrid_campaign(updated_instance.sendgrid_campaign_id, send_at_utc)
+                                print(f"Rescheduled SendGrid campaign {updated_instance.sendgrid_campaign_id} for {send_at_utc}")
+                            except Exception as e:
+                                print(f"Failed to reschedule SendGrid campaign {updated_instance.sendgrid_campaign_id}: {e}")
+                except Exception as e:
+                    print(f"Failed to update SendGrid campaign for step {updated_instance.id}: {e}")
+                    # Don't fail the entire update if SendGrid update fails
+        
+        return response
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
