@@ -275,9 +275,38 @@ def get_campaign_stats(campaign_id):
         logger.error(f"[SendGrid] Error getting campaign stats: {e}")
         return None
 
-def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=121794):
+def unschedule_sendgrid_campaign(campaign_id):
+    """Unschedule a SendGrid campaign (move it to draft status)"""
+    try:
+        res = requests.delete(
+            f"{SENDGRID_BASE_URL}/marketing/singlesends/{campaign_id}/schedule",
+            headers=HEADERS
+        )
+        
+        logger.info(f"[SendGrid] Unschedule response: {res.status_code} - {res.text}")
+        
+        # 204 No Content is expected for successful unscheduling
+        if res.status_code == 204:
+            logger.info(f"[SendGrid] Successfully unscheduled campaign {campaign_id}")
+            return True
+        elif res.status_code == 404:
+            logger.info(f"[SendGrid] Campaign {campaign_id} was not scheduled")
+            return True  # Campaign is already in draft
+        else:
+            _handle_response(res, "Unschedule campaign")
+            return True
+            
+    except requests.RequestException as e:
+        logger.error(f"[SendGrid] Network error unscheduling campaign: {e}")
+        raise SendGridError(f"Network error unscheduling campaign: {e}")
+
+def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=121794, reschedule_datetime=None):
     """Update an existing SendGrid campaign with new content"""
     try:
+        # First, unschedule the campaign to move it to draft status
+        logger.info(f"[SendGrid] Moving campaign {campaign_id} to draft status before update")
+        unschedule_sendgrid_campaign(campaign_id)
+        
         # Validate required fields
         if not step.subject or not step.subject.strip():
             raise SendGridError("Campaign subject cannot be empty")
@@ -301,7 +330,8 @@ def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=
                 "subject": step.subject.strip(),
                 "html_content": validated_html,
                 "sender_id": int(sender_id),
-                "editor": "code"
+                "editor": "code",
+                "generate_plain_content": True
             }
         }
         
@@ -315,7 +345,7 @@ def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=
 
         logger.info(f"[SendGrid] Updating campaign {campaign_id} with data: {data}")
         
-        res = requests.put(
+        res = requests.patch(
             f"{SENDGRID_BASE_URL}/marketing/singlesends/{campaign_id}", 
             headers=HEADERS, 
             json=data
@@ -326,6 +356,12 @@ def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=
         
         response_data = res.json()
         logger.info(f"[SendGrid] Updated campaign '{campaign_name}' with ID: {campaign_id}")
+        
+        # If reschedule_datetime is provided, reschedule the campaign
+        if reschedule_datetime:
+            logger.info(f"[SendGrid] Rescheduling campaign {campaign_id} for {reschedule_datetime}")
+            schedule_sendgrid_campaign(campaign_id, reschedule_datetime)
+            logger.info(f"[SendGrid] Successfully rescheduled campaign {campaign_id}")
         
         return response_data
         

@@ -30,10 +30,9 @@ from io import BytesIO
 from django.http import HttpResponse
 import csv
 from rest_framework.permissions import AllowAny
-import time
-
-from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list, delete_campaign_steps_in_sendgrid, update_sendgrid_campaign
+from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list, delete_campaign_steps_in_sendgrid, update_sendgrid_campaign, unschedule_sendgrid_campaign
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
+import time
 from .utils.metrics import get_all_metrics
 from django.utils.dateparse import parse_date
 from django.utils.timezone import is_naive
@@ -615,6 +614,21 @@ class EmailCampaignToggleView(APIView):
                                             step.sendgrid_campaign_id = sendgrid_id
                                             step.save()
                                             sendgrid_results.append({'step_id': step.id, 'action': 'created', 'sendgrid_campaign_id': sendgrid_id})
+                                            
+                                            # Schedule the campaign if send_at is set
+                                            if step.send_at:
+                                                try:
+                                                    send_at = step.send_at
+                                                    if is_naive(send_at):
+                                                        local_tz = pytz.timezone('Asia/Kolkata')
+                                                        send_at = local_tz.localize(send_at)
+                                                    send_at_utc = send_at.astimezone(pytz.UTC)
+                                                    schedule_sendgrid_campaign(sendgrid_id, send_at_utc)
+                                                    sendgrid_results[-1]['scheduled_for'] = send_at_utc.isoformat()
+                                                    print(f"Scheduled SendGrid campaign {sendgrid_id} for {send_at_utc}")
+                                                except Exception as e:
+                                                    print(f"Failed to schedule SendGrid campaign {sendgrid_id}: {e}")
+                                                    sendgrid_results[-1]['schedule_error'] = str(e)
                                 except Exception as e:
                                     sendgrid_results.append({'step_id': step.id, 'action': 'create_failed', 'error': str(e)})
                     else:
@@ -659,6 +673,21 @@ class CampaignStepToggleView(APIView):
                                     step.sendgrid_campaign_id = sendgrid_id
                                     step.save()
                                     sendgrid_result = {'action': 'created', 'sendgrid_campaign_id': sendgrid_id}
+                                    
+                                    # Schedule the campaign if send_at is set
+                                    if step.send_at:
+                                        try:
+                                            send_at = step.send_at
+                                            if is_naive(send_at):
+                                                local_tz = pytz.timezone('Asia/Kolkata')
+                                                send_at = local_tz.localize(send_at)
+                                            send_at_utc = send_at.astimezone(pytz.UTC)
+                                            schedule_sendgrid_campaign(sendgrid_id, send_at_utc)
+                                            sendgrid_result['scheduled_for'] = send_at_utc.isoformat()
+                                            print(f"Scheduled SendGrid campaign {sendgrid_id} for {send_at_utc}")
+                                        except Exception as e:
+                                            print(f"Failed to schedule SendGrid campaign {sendgrid_id}: {e}")
+                                            sendgrid_result['schedule_error'] = str(e)
                     else:
                         # Disabling step - delete SendGrid campaign if it exists
                         if step.sendgrid_campaign_id:
@@ -923,7 +952,7 @@ class CampaignStepListCreateView(ListCreateAPIView):
                             if is_naive(send_at):
                                 local_tz = pytz.timezone('Asia/Kolkata')
                                 send_at = local_tz.localize(send_at)
-                            send_at_utc = send_at.astimezone(timezone.utc)
+                            send_at_utc = send_at.astimezone(pytz.UTC)
                             print(f"Scheduling SendGrid campaign {sendgrid_campaign_id}: original send_at={step.send_at}, UTC={send_at_utc}")
                             schedule_sendgrid_campaign(sendgrid_campaign_id, send_at_utc)
                             print(f"Scheduled SendGrid campaign {sendgrid_campaign_id} for {send_at_utc}")
@@ -1014,27 +1043,27 @@ class CampaignStepDetailView(RetrieveUpdateDestroyAPIView):
                     if not str(sender_id).isdigit():
                         print(f"Invalid sender_id: {sender_id}")
                     else:
+                        # Prepare reschedule datetime if send_at is set
+                        reschedule_datetime = None
+                        if updated_instance.send_at:
+                            send_at = updated_instance.send_at
+                            if is_naive(send_at):
+                                local_tz = pytz.timezone('Asia/Kolkata')
+                                send_at = local_tz.localize(send_at)
+                            reschedule_datetime = send_at.astimezone(pytz.UTC)
+                            print(f"Will reschedule SendGrid campaign {updated_instance.sendgrid_campaign_id}: original send_at={updated_instance.send_at}, UTC={reschedule_datetime}")
+                        
                         update_sendgrid_campaign(
                             updated_instance.sendgrid_campaign_id,
                             updated_instance,
                             sender_id,
-                            suppression_group_id
+                            suppression_group_id,
+                            reschedule_datetime
                         )
                         print(f"Updated SendGrid campaign {updated_instance.sendgrid_campaign_id} for step {updated_instance.id}")
                         
-                        # If send_at has changed, reschedule the campaign
-                        if updated_instance.send_at:
-                            try:
-                                send_at = updated_instance.send_at
-                                if is_naive(send_at):
-                                    local_tz = pytz.timezone('Asia/Kolkata')
-                                    send_at = local_tz.localize(send_at)
-                                send_at_utc = send_at.astimezone(timezone.utc)
-                                print(f"Rescheduling SendGrid campaign {updated_instance.sendgrid_campaign_id}: original send_at={updated_instance.send_at}, UTC={send_at_utc}")
-                                schedule_sendgrid_campaign(updated_instance.sendgrid_campaign_id, send_at_utc)
-                                print(f"Rescheduled SendGrid campaign {updated_instance.sendgrid_campaign_id} for {send_at_utc}")
-                            except Exception as e:
-                                print(f"Failed to reschedule SendGrid campaign {updated_instance.sendgrid_campaign_id}: {e}")
+                        if reschedule_datetime:
+                            print(f"Rescheduled SendGrid campaign {updated_instance.sendgrid_campaign_id} for {reschedule_datetime}")
                 except Exception as e:
                     print(f"Failed to update SendGrid campaign for step {updated_instance.id}: {e}")
                     # Don't fail the entire update if SendGrid update fails
