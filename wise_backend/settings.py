@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "django-insecure-friw+4ju8-k_drce@5e88icvhz#a0kl%i9c+25v+6)r&vdte66"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     "core",
     "corsheaders",
     "accounts",
+    "wise_backend.logs",  # Add the logs app
     "django_extensions",
 ]
 
@@ -200,6 +201,79 @@ CORS_ALLOW_METHODS = [
 # Additional settings for mobile development
 CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
 
+# ========================
+# REDIS CONFIGURATION
+# ========================
+REDIS_HOST = config('REDIS_HOST', default='localhost')
+REDIS_PORT = config('REDIS_PORT', default=6379, cast=int)
+REDIS_DB = config('REDIS_DB', default=0, cast=int)
+REDIS_PASSWORD = config('REDIS_PASSWORD', default=None)
+
+# ========================
+# CELERY CONFIGURATION
+# ========================
+# Celery Broker settings (Redis)
+if REDIS_PASSWORD:
+    CELERY_BROKER_URL = f'redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
+else:
+    CELERY_BROKER_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
+
+# Celery Result Backend (Redis)
+CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+
+# Celery Task Settings
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+# Celery Worker Settings
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000
+
+# Celery Task Routes (disabled for now - all tasks go to default queue)
+# CELERY_TASK_ROUTES = {
+#     'wise_backend.logs.tasks.*': {'queue': 'logs'},
+#     'core.tasks.*': {'queue': 'core'},
+# }
+
+# Celery Beat Settings (for periodic tasks)
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+# Task Result Settings
+CELERY_RESULT_EXPIRES = 3600  # 1 hour
+CELERY_TASK_RESULT_EXPIRES = 3600
+
+# Task Error Handling
+CELERY_TASK_SOFT_TIME_LIMIT = 300  # 5 minutes
+CELERY_TASK_TIME_LIMIT = 600  # 10 minutes
+CELERY_TASK_MAX_RETRIES = 3
+
+# Connection Pool Settings
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_POOL_LIMIT = 10
+
+# Logging for Celery
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+
+# ========================
+# REDIS CLIENT CONFIGURATION
+# ========================
+REDIS_CONFIG = {
+    'host': REDIS_HOST,
+    'port': REDIS_PORT,
+    'db': REDIS_DB,
+    'socket_connect_timeout': 5,
+    'socket_timeout': 5,
+    'retry_on_timeout': True,
+    'health_check_interval': 30,
+}
+
+# Only add password if it's set
+if REDIS_PASSWORD:
+    REDIS_CONFIG['password'] = REDIS_PASSWORD
+
 # Trusted origins for CSRF (add your frontend URLs)
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
@@ -207,10 +281,6 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
     "http://192.168.110.70:3000",
 ]
-CELERY_BROKER_URL = 'redis://localhost:6379/0'
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
 
 # Auth0 Credentials
 AUTH0_DOMAIN = config("AUTH0_DOMAIN")

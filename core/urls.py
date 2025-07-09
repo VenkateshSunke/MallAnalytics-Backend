@@ -48,4 +48,10 @@ urlpatterns = [
     path('sendgrid/senders/', views.SendGridSenderListView.as_view(), name='sendgrid-sender-list'),
     path('sendgrid/suppression-groups/', views.SendGridSuppressionGroupListView.as_view(), name='sendgrid-suppression-group-list'),
 
+    # ---- blueprint endpoints ---- #
+    path('blueprints/', views.BlueprintListCreateView.as_view(), name='blueprint-list-create'),
+    path('blueprints/<int:blueprint_id>/', views.BlueprintDetailView.as_view(), name='blueprint-detail'),
+    path('blueprints/<int:blueprint_id>/apply/', views.BlueprintApplyView.as_view(), name='blueprint-apply'),
+    path('blueprints/create-from-current/', views.BlueprintCreateFromCurrentView.as_view(), name='blueprint-create-from-current'),
+
 ]
