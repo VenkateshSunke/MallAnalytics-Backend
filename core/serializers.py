@@ -247,3 +247,30 @@ class CampaignStepSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data.pop('image_files', None)
         return super().create(validated_data)
+
+
+class BlueprintSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Blueprint
+        fields = ['blueprint_id', 'name', 'description', 'mapping_data', 'created_at', 'updated_at', 'is_active']
+        read_only_fields = ['blueprint_id', 'created_at', 'updated_at']
+
+    def validate_mapping_data(self, value):
+        """Validate the mapping data structure"""
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Mapping data must be a dictionary.")
+        
+        # Check for required keys
+        required_keys = ['stores', 'cameras', 'calibration']
+        for key in required_keys:
+            if key not in value:
+                raise serializers.ValidationError(f"Missing required key: {key}")
+        
+        return value
+
+
+class BlueprintListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for listing blueprints"""
+    class Meta:
+        model = Blueprint
+        fields = ['blueprint_id', 'name', 'description', 'created_at', 'updated_at', 'is_active']

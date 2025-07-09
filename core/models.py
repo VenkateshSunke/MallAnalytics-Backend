@@ -194,3 +194,20 @@ class CampaignStepImage(models.Model):
     
     class Meta:
         ordering = ['upload_order', 'created_at']
+
+
+class Blueprint(models.Model):
+    """Model to store different mapping configurations/blueprints"""
+    blueprint_id = models.AutoField(primary_key=True)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    mapping_data = models.JSONField()  # Store complete mapping configuration
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return self.name

@@ -29,6 +29,7 @@ from datetime import timezone
 from io import BytesIO
 from django.http import HttpResponse
 import csv
+import time
 
 from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
@@ -371,59 +372,6 @@ class GetUserInterestsView(APIView):
 class uploadPhotoView(APIView):
     parser_classes = [MultiPartParser]
 
-    # def post(self, request):
-    #     photo = request.FILES.get('photo')
-    #     if not photo:
-    #         return Response({"detail": "No photo uploaded"}, status=400)
-
-    #     s3 = boto3.client('s3',
-    #         aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
-    #         aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY')
-    #     )
-
-    #     bucket_name = config('AWS_STORAGE_BUCKET_NAME')
-    #     # filename = f'users/{photo.name}'
-    #     filename = f'users/{uuid.uuid4().hex}_{photo.name}'
-
-    #     try:
-    #         s3.upload_fileobj(photo, bucket_name, filename)
-    #     except Exception as e:
-    #         return Response({"detail": str(e)}, status=500)
-
-    #     return Response({"photo_url": filename}, status=200)
-
-    #     # s3.upload_fileobj(photo, bucket_name, filename)
-    #     # photo_url = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
-
-    #     # # Register the face in Rekognition
-    #     # rekognition = boto3.client('rekognition',
-    #     #     aws_access_key_id=config('AWS_ACCESS_KEY_ID'),
-    #     #     aws_secret_access_key=config('AWS_SECRET_ACCESS_KEY'),
-    #     #     region_name=config('AWS_REGION')
-    #     # )
-    #     # collection_id = config('AWS_REKOGNITION_COLLECTION_ID')
-
-    #     # response = rekognition.index_faces(
-    #     #     CollectionId=collection_id,
-    #     #     Image={
-    #     #         'S3Object': {
-    #     #             'Bucket': bucket_name,
-    #     #             'Name': filename
-    #     #         }
-    #     #     },
-    #     #     ExternalImageId=photo.name,  # Optional: used for linking
-    #     #     DetectionAttributes=['DEFAULT']
-    #     # )
-        
-    #     # # Extract faceId(s)
-    #     # face_records = response.get('FaceRecords', [])
-    #     # if face_records:
-    #     #     face_id = face_records[0]['Face']['FaceId']
-    #     #     return Response({'photo_url': photo_url, 'face_id': face_id}, status=200)
-    #     # else:
-    #     #     return Response({'photo_url': photo_url, 'detail': 'No face detected'}, status=400)
-
-    #     # return Response({'photo_url': photo_url}, status=200)
     def post(self, request):
         photo = request.FILES.get('photo')
         if not photo:
@@ -446,23 +394,27 @@ class uploadPhotoView(APIView):
                 aws_secret_access_key=aws_secret_key,
                 region_name=region
             )
+            print(s3_key,'tesgdfgdfgdfg')
             s3.upload_fileobj(photo, bucket_name, s3_key)
+            time.sleep(0.5)
 
+            # s3.head_object(Bucket=bucket_name, Key=s3_key)
             # Register with Rekognition
             rekognition = boto3.client('rekognition',
                 aws_access_key_id=aws_access_key,
                 aws_secret_access_key=aws_secret_key,
                 region_name=region
             )
-
+            print(rekognition,'rekognition')
             response = rekognition.index_faces(
                 CollectionId=collection_id,
                 Image={'S3Object': {'Bucket': bucket_name, 'Name': s3_key}},
                 ExternalImageId=photo.name,
                 DetectionAttributes=['DEFAULT']
             )
-
+            print(response,'response')
             face_records = response.get('FaceRecords', [])
+            print(face_records,'fae_records')
             if not face_records:
                 return Response({
                     "photo_url": s3_key,
@@ -1110,3 +1062,181 @@ class ExportMovementsCSV(APIView):
                 m.store.store_name if m.store else '',
             ])
         return response
+
+
+# --- BLUEPRINT CRUD VIEWS ---
+class BlueprintListCreateView(ListCreateAPIView):
+    """
+    GET /api/blueprints/ - List all blueprints
+    POST /api/blueprints/ - Create new blueprint
+    """
+    queryset = Blueprint.objects.all()
+    pagination_class = PageNumberWithSizePagination
+    
+    def get_serializer_class(self):
+        if self.request.method == 'GET':
+            return BlueprintListSerializer
+        return BlueprintSerializer
+    
+    def get_queryset(self):
+        queryset = Blueprint.objects.all()
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+        return queryset
+
+
+class BlueprintDetailView(RetrieveUpdateDestroyAPIView):
+    """
+    GET /api/blueprints/{id}/ - Get specific blueprint
+    PUT /api/blueprints/{id}/ - Update blueprint
+    DELETE /api/blueprints/{id}/ - Delete blueprint
+    """
+    queryset = Blueprint.objects.all()
+    serializer_class = BlueprintSerializer
+    lookup_field = 'blueprint_id'
+    
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.is_active = False
+        instance.save()
+        return Response(
+            {"detail": "Blueprint deactivated successfully"}, 
+            status=status.HTTP_200_OK
+        )
+
+
+class BlueprintApplyView(APIView):
+    """
+    POST /api/blueprints/{id}/apply/ - Apply blueprint to current mapping
+    """
+    def post(self, request, blueprint_id):
+        try:
+            blueprint = Blueprint.objects.get(blueprint_id=blueprint_id)
+        except Blueprint.DoesNotExist:
+            return Response(
+                {"detail": "Blueprint not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        if not blueprint.is_active:
+            return Response(
+                {"detail": "Blueprint is not active"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Apply the blueprint mapping data
+            mapping_data = blueprint.mapping_data
+            
+            # Update stores
+            for store_id, store_data in mapping_data.get('stores', {}).items():
+                poly = Polygon(store_data['polygon'])
+                Store.objects.update_or_create(
+                    id=store_id,
+                    defaults={
+                        "name": store_data["name"],
+                        "category": store_data["category"],
+                        "polygon": f"SRID=4326;{poly.wkt}",
+                        "is_mapped": store_data["is_mapped"],
+                    }
+                )
+            
+            # Update cameras
+            for cam_id, cam_data in mapping_data.get('cameras', {}).items():
+                point = Point(cam_data["position"])
+                Camera.objects.update_or_create(
+                    id=cam_id,
+                    defaults={
+                        "position": f"SRID=4326;{point.wkt}",
+                        "orientation": cam_data["orientation"],
+                        "fov_angle": cam_data["fov_angle"],
+                        "fov_range": cam_data["fov_range"],
+                    }
+                )
+            
+            # Update calibration
+            calibration_data = mapping_data.get('calibration', {})
+            for store_id, matrix in calibration_data.get('store_matrices', {}).items():
+                Calibration.objects.update_or_create(
+                    store_id=store_id,
+                    defaults={"matrix": matrix}
+                )
+            
+            return Response({
+                "detail": "Blueprint applied successfully",
+                "blueprint_name": blueprint.name
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {"detail": f"Error applying blueprint: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class BlueprintCreateFromCurrentView(APIView):
+    """
+    POST /api/blueprints/create-from-current/ - Create blueprint from current mapping data
+    """
+    def post(self, request):
+        name = request.data.get('name')
+        description = request.data.get('description', '')
+        
+        if not name:
+            return Response(
+                {"detail": "Blueprint name is required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get current mapping data (same as MappingDataView)
+            def parse_polygon(polygon_wkt):
+                if polygon_wkt.startswith("SRID="):
+                    polygon_wkt = polygon_wkt.split(";", 1)[1]
+                polygon = wkt.loads(polygon_wkt)
+                return list(polygon.exterior.coords)
+
+            stores = {
+                str(store.id): {
+                    "name": store.name,
+                    "category": store.category,
+                    "polygon": parse_polygon(store.polygon),
+                    "is_mapped": store.is_mapped,
+                } for store in Store.objects.all()
+            }
+
+            cameras = {
+                str(cam.id): {
+                    "position": cam.position,
+                    "orientation": cam.orientation,
+                    "fov_angle": cam.fov_angle,
+                    "fov_range": cam.fov_range,
+                } for cam in Camera.objects.all()
+            }
+
+            calibrations = {
+                str(cal.store_id): cal.matrix for cal in Calibration.objects.all()
+            }
+
+            mapping_data = {
+                "stores": stores,
+                "cameras": cameras,
+                "calibration": {"store_matrices": calibrations}
+            }
+            
+            # Create blueprint
+            blueprint = Blueprint.objects.create(
+                name=name,
+                description=description,
+                mapping_data=mapping_data
+            )
+            
+            serializer = BlueprintSerializer(blueprint)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            return Response(
+                {"detail": f"Error creating blueprint: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

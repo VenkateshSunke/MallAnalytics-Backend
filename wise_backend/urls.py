@@ -23,6 +23,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/', include('core.urls')),  # replace 'app' with your actual app name
     path('accounts/', include('accounts.urls')),
+    path('api/logs/', include('wise_backend.logs.urls')),  # Add logs endpoints
 ]
 
 # Add media URL pattern in development
