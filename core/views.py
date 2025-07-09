@@ -29,7 +29,8 @@ from datetime import timezone
 from io import BytesIO
 from django.http import HttpResponse
 import csv
-from rest_framework.permissions import AllowAnyimport time
+from rest_framework.permissions import AllowAny
+import time
 
 from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list, delete_campaign_steps_in_sendgrid, update_sendgrid_campaign
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
