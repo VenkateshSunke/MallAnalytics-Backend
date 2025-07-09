@@ -356,6 +356,71 @@ def print_user_metrics(user):
           if average_time_spent_per_month(visits) else "Average Time Spent per Month: N/A")
 
 
+def average_stores_visited_per_year(visits: List) -> float:
+    """
+    Calculate the average number of stores visited per year across all years with visits.
+    
+    Calculation:
+    1. Group visits by year
+    2. Sum stores_visited for each year
+    3. Calculate average: total_stores_across_all_years / number_of_unique_years
+    
+    Example: 
+    - 2023: Visit 1 (2 stores) + Visit 2 (3 stores) = 5 stores
+    - 2024: Visit 3 (1 store) + Visit 4 (4 stores) = 5 stores
+    Average = (5 + 5) / 2 = 5.0 stores per year
+    
+    Returns 0.0 if no visits or no valid dates.
+    """
+    if not visits:
+        return 0.0
+    
+    stores_per_year = defaultdict(int)
+    for v in visits:
+        vdate = _get_visit_date(v)
+        stores = _get_stores_visited(v) or 0
+        if vdate:
+            stores_per_year[vdate.year] += stores
+    
+    if not stores_per_year:
+        return 0.0
+    
+    return sum(stores_per_year.values()) / len(stores_per_year)
+
+
+def total_life_time_spent(visits: List) -> Optional[float]:
+    """
+    Calculate the total time spent across the user's entire history.
+    
+    Calculation:
+    Sums the duration field from all visits.
+    
+    Example: If visits show [30min, 45min, 60min, 20min] respectively, returns 155 minutes.
+    Treats None/missing values as 0.
+    
+    Returns None if no visits have valid durations.
+    Duration is returned in seconds.
+    """
+    if not visits:
+        return None
+    
+    total_seconds = 0
+    valid_durations = 0
+    
+    for v in visits:
+        duration = _get_duration(v)
+        if duration:
+            valid_durations += 1
+            # Convert duration to seconds for calculation
+            if hasattr(duration, 'total_seconds'):
+                total_seconds += duration.total_seconds()
+            else:
+                # Handle string duration format if needed
+                total_seconds += float(duration)
+    
+    return total_seconds if valid_durations > 0 else None
+
+
 def get_all_metrics(visits):
     """
     Returns a dictionary of all calculated metrics for a list of visits.
@@ -368,7 +433,9 @@ def get_all_metrics(visits):
         "average_monthly_visits": round(average_monthly_visits(visits), 2),
         "average_yearly_visits": round(average_yearly_visits(visits), 2),
         "average_stores_visited_per_month": round(average_stores_visited_per_month(visits), 2),
+        "average_stores_visited_per_year": round(average_stores_visited_per_year(visits), 2),
         "total_stores_visited_life": total_stores_visited_life(visits),
+        "total_life_time_spent": round(total_life_time_spent(visits), 2) if total_life_time_spent(visits) is not None else None,
         "monthly_frequency": round(monthly_frequency(visits), 2),
         "visit_frequency_over_timespan": round(visit_frequency_over_timespan(visits), 2) if visit_frequency_over_timespan(visits) is not None else None,
         "average_time_spent_per_year": round(average_time_spent_per_year(visits), 2) if average_time_spent_per_year(visits) is not None else None,
