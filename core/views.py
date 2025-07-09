@@ -30,7 +30,7 @@ from io import BytesIO
 from django.http import HttpResponse
 import csv
 from rest_framework.permissions import AllowAny
-from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list, delete_campaign_steps_in_sendgrid, update_sendgrid_campaign
+from .utils.sendgrid_service import create_list, sync_contacts_to_list, create_sendgrid_campaign, schedule_sendgrid_campaign, get_senders, get_default_sender_id, SendGridError, get_campaign_details, get_suppression_groups, get_campaign_stats, delete_sendgrid_campaign, delete_sendgrid_list, remove_contact_from_list, delete_campaign_steps_in_sendgrid, update_sendgrid_campaign, unschedule_sendgrid_campaign
 from .utils.sendgrid_s3_images import S3ImageService, auto_embed_images_in_html
 from .utils.metrics import get_all_metrics
 from django.utils.dateparse import parse_date
@@ -1091,27 +1091,27 @@ class CampaignStepDetailView(RetrieveUpdateDestroyAPIView):
                     if not str(sender_id).isdigit():
                         print(f"Invalid sender_id: {sender_id}")
                     else:
+                        # Prepare reschedule datetime if send_at is set
+                        reschedule_datetime = None
+                        if updated_instance.send_at:
+                            send_at = updated_instance.send_at
+                            if is_naive(send_at):
+                                local_tz = pytz.timezone('Asia/Kolkata')
+                                send_at = local_tz.localize(send_at)
+                            reschedule_datetime = send_at.astimezone(pytz.UTC)
+                            print(f"Will reschedule SendGrid campaign {updated_instance.sendgrid_campaign_id}: original send_at={updated_instance.send_at}, UTC={reschedule_datetime}")
+                        
                         update_sendgrid_campaign(
                             updated_instance.sendgrid_campaign_id,
                             updated_instance,
                             sender_id,
-                            suppression_group_id
+                            suppression_group_id,
+                            reschedule_datetime
                         )
                         print(f"Updated SendGrid campaign {updated_instance.sendgrid_campaign_id} for step {updated_instance.id}")
                         
-                        # If send_at has changed, reschedule the campaign
-                        if updated_instance.send_at:
-                            try:
-                                send_at = updated_instance.send_at
-                                if is_naive(send_at):
-                                    local_tz = pytz.timezone('Asia/Kolkata')
-                                    send_at = local_tz.localize(send_at)
-                                send_at_utc = send_at.astimezone(pytz.UTC)
-                                print(f"Rescheduling SendGrid campaign {updated_instance.sendgrid_campaign_id}: original send_at={updated_instance.send_at}, UTC={send_at_utc}")
-                                schedule_sendgrid_campaign(updated_instance.sendgrid_campaign_id, send_at_utc)
-                                print(f"Rescheduled SendGrid campaign {updated_instance.sendgrid_campaign_id} for {send_at_utc}")
-                            except Exception as e:
-                                print(f"Failed to reschedule SendGrid campaign {updated_instance.sendgrid_campaign_id}: {e}")
+                        if reschedule_datetime:
+                            print(f"Rescheduled SendGrid campaign {updated_instance.sendgrid_campaign_id} for {reschedule_datetime}")
                 except Exception as e:
                     print(f"Failed to update SendGrid campaign for step {updated_instance.id}: {e}")
                     # Don't fail the entire update if SendGrid update fails
