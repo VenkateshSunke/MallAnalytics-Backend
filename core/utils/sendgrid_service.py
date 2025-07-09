@@ -301,7 +301,9 @@ def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=
                 "subject": step.subject.strip(),
                 "html_content": validated_html,
                 "sender_id": int(sender_id),
-                "editor": "code"
+                "editor": "code",
+                "generate_plain_content": True,
+                "suppression_group_id": suppression_group_id
             }
         }
         
@@ -315,7 +317,7 @@ def update_sendgrid_campaign(campaign_id, step, sender_id, suppression_group_id=
 
         logger.info(f"[SendGrid] Updating campaign {campaign_id} with data: {data}")
         
-        res = requests.put(
+        res = requests.patch(
             f"{SENDGRID_BASE_URL}/marketing/singlesends/{campaign_id}", 
             headers=HEADERS, 
             json=data
