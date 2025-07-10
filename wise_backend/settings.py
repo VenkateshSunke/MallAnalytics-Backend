@@ -13,7 +13,10 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 from decouple import config
 from rest_framework.permissions import AllowAny
+from dotenv import load_dotenv
 import dj_database_url
+
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -205,18 +208,33 @@ CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
 # REDIS CONFIGURATION
 # ========================
 REDIS_HOST = config('REDIS_HOST', default='localhost')
-REDIS_PORT = config('REDIS_PORT', default=6379, cast=int)
-REDIS_DB = config('REDIS_DB', default=0, cast=int)
+REDIS_PORT = config('REDIS_PORT', default=6379)
+REDIS_DB = config('REDIS_DB', default=0)
 REDIS_PASSWORD = config('REDIS_PASSWORD', default=None)
+REDIS_USER = config('REDIS_USER', default=None)
+
+SSL = config('SSL', default=False, cast=bool)
+BACKEND_KEY = "rediss" if SSL else "redis"
+
+base_url = f"{BACKEND_KEY}://{REDIS_USER}:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+REDIS_URL = (
+    f"{base_url}?ssl_cert_reqs=none"
+    if SSL
+    else base_url
+)
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_URL,
+    }
+}
 
 # ========================
 # CELERY CONFIGURATION
 # ========================
 # Celery Broker settings (Redis)
-if REDIS_PASSWORD:
-    CELERY_BROKER_URL = f'redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
-else:
-    CELERY_BROKER_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
+CELERY_BROKER_URL = REDIS_URL
 
 # Celery Result Backend (Redis)
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
@@ -239,20 +257,14 @@ CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000
 # }
 
 # Celery Beat Settings (for periodic tasks)
-CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
-
-# Task Result Settings
-CELERY_RESULT_EXPIRES = 3600  # 1 hour
-CELERY_TASK_RESULT_EXPIRES = 3600
+CELERY_BEAT_SCHEDULER = 'redbeat.RedBeatScheduler'
+task_ignore_result = True
 
 # Task Error Handling
-CELERY_TASK_SOFT_TIME_LIMIT = 300  # 5 minutes
-CELERY_TASK_TIME_LIMIT = 600  # 10 minutes
-CELERY_TASK_MAX_RETRIES = 3
+CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 5 minutes
+CELERY_TASK_TIME_LIMIT = 30 * 60  # 10 minutes
+CELERY_TASK_IGNORE_RESULT = True
 
-# Connection Pool Settings
-CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
-CELERY_BROKER_POOL_LIMIT = 10
 
 # Logging for Celery
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False
@@ -262,8 +274,8 @@ CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 # ========================
 REDIS_CONFIG = {
     'host': REDIS_HOST,
-    'port': REDIS_PORT,
-    'db': REDIS_DB,
+    'port': int(REDIS_PORT),
+    'db': int(REDIS_DB),
     'socket_connect_timeout': 5,
     'socket_timeout': 5,
     'retry_on_timeout': True,

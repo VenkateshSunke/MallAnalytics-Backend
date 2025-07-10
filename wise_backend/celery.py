@@ -15,10 +15,10 @@ app.autodiscover_tasks()
 
 # Periodic task schedule
 app.conf.beat_schedule = {
-    'process-movement-logs': {
-        'task': 'wise_backend.logs.tasks.process_movement_logs_batch',
-        'schedule': 10.0,  # Every 10 seconds
-    },
+    # 'process-movement-logs': {
+    #     'task': 'wise_backend.logs.tasks.process_movement_logs_batch',
+    #     'schedule': 10.0,  # Every 10 seconds
+    # },
 }
 app.conf.timezone = 'UTC'
 
