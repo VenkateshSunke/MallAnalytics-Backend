@@ -1,0 +1,15 @@
+stages:
+  - deploy
+
+development-deploy-job:
+  stage: deploy
+  script:
+    - echo "Deploying application..."
+    - echo "${DEVELOP_SSH_PRIVATE_KEY}" > ssh_key.pem
+    - chmod 400 ssh_key.pem
+    - ssh -o StrictHostKeyChecking=no -i ssh_key.pem "${DEVELOP_USER}"@"${DEVELOP_SERVER_IP}" "bash /home/ubuntu/dev/scripts/backend.sh"
+    - echo "Application successfully deployed."
+  only:
+    - gitlab_push
+
+
