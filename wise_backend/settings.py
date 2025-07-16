@@ -182,6 +182,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://192.168.110.70:5173",  # React frontend on local IP
     "http://localhost:3000",  # Alternative React port
     "http://192.168.110.70:3000",  # Alternative React port on local IP
+    "https://wise-video-api-dev.wiseagents.com",
 ]
 
 # For development, allow all origins (remove this in production)
