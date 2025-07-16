@@ -293,6 +293,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://192.168.110.70:5173",
     "http://localhost:3000",
     "http://192.168.110.70:3000",
+    "https://wise-video-api-dev.wiseagents.com",
 ]
 
 # Auth0 Credentials
