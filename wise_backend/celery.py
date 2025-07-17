@@ -1,6 +1,6 @@
 import os
 from celery import Celery
-from celery.schedules import crontab
+from celery.schedules import solar
 
 # Set the default Django settings module for the 'celery' program.
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'wise_backend.settings')
@@ -22,7 +22,7 @@ app.conf.beat_schedule = {
     # },
     'export-camera-task': {
         'task': 'wise_backend.logs.tasks.start_batch_camera',
-        'schedule': crontab(hour='*/12', minute=0),  # Every 12 hours
+        'schedule': solar('sunset', -12.0464, -77.0428),  # Lima, Peru: Every sunset
     },
 }
 app.conf.timezone = 'UTC'
