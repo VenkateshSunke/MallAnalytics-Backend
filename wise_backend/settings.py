@@ -15,6 +15,8 @@ from decouple import config
 from rest_framework.permissions import AllowAny
 from dotenv import load_dotenv
 import dj_database_url
+import logging.config
+import os
 
 load_dotenv()
 
@@ -164,17 +166,64 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
+if not os.path.exists(os.path.join(LOG_DIR, "django")):
+    os.makedirs(os.path.join(LOG_DIR, "django"))
+
+if not os.path.exists(os.path.join(LOG_DIR, "celery")):
+    os.makedirs(os.path.join(LOG_DIR, "celery"))
+
 LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,  # Keeps default loggers
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "%(levelname)s %(asctime)s %(module)s %(process)d %(thread)d %(message)s"
+        },
+        "simple": {"format": "%(levelname)s %(message)s"},
+    },
+    "handlers": {
+        "console": {
+            "level": "INFO",
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+        "file": {
+            "level": "INFO",
+            "class": "concurrent_log_handler.ConcurrentRotatingFileHandler",
+            "filename": os.path.join(LOG_DIR, "django", "django.log"),
+            "maxBytes": 1024 * 1024 * 20,
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
+        "celery": {
+            "level": "INFO",
+            "class": "concurrent_log_handler.ConcurrentRotatingFileHandler",
+            "filename": os.path.join(LOG_DIR, "celery", "celery.log"),
+            "maxBytes": 1024 * 1024 * 20,
+            "backupCount": 5,
+            "formatter": "verbose",
         },
     },
-    'root': {
-        'handlers': ['console'],
-        'level': 'INFO',  # Change to DEBUG for more detailed logs
+    "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": True,
+        },
+        "celery": {
+            "handlers": ["console", "celery"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "celery.task": {
+            "handlers": ["console", "celery"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }
 CORS_ALLOWED_ORIGINS = [
@@ -234,41 +283,56 @@ CACHES = {
 # ========================
 # CELERY CONFIGURATION
 # ========================
-# Celery Broker settings (Redis)
+# Redis as broker (instead of RabbitMQ)
 CELERY_BROKER_URL = REDIS_URL
-
-# Celery Result Backend (Redis)
-CELERY_RESULT_BACKEND = CELERY_BROKER_URL
-
-# Celery Task Settings
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = TIME_ZONE
-
-# Celery Worker Settings
-CELERY_WORKER_PREFETCH_MULTIPLIER = 1
-CELERY_TASK_ACKS_LATE = True
-CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000
-
-# Celery Task Routes (disabled for now - all tasks go to default queue)
-# CELERY_TASK_ROUTES = {
-#     'wise_backend.logs.tasks.*': {'queue': 'logs'},
-#     'core.tasks.*': {'queue': 'core'},
-# }
 
 # Celery Beat Settings (for periodic tasks)
 CELERY_BEAT_SCHEDULER = 'redbeat.RedBeatScheduler'
-task_ignore_result = True
+REDBEAT_REDIS_URL = REDIS_URL
 
-# Task Error Handling
-CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 5 minutes
-CELERY_TASK_TIME_LIMIT = 30 * 60  # 10 minutes
+# Task Settings
 CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+CELERY_ACCEPT_CONTENT = ['json']
 
+# Result Backend
+CELERY_RESULT_BACKEND = REDIS_URL
 
-# Logging for Celery
-CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+# Task Time Limits - Extended for large video processing
+CELERY_TASK_TIME_LIMIT = 72 * 60 * 60  # 72 hours for very large videos
+CELERY_TASK_SOFT_TIME_LIMIT = 70 * 60 * 60  # 70 hours soft limit
+
+# Worker Settings - High memory for video processing with RetinaFace
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1  # Process one large task then restart
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = 16 * 1024 * 1024  # 16GB memory limit
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Don't prefetch to save memory
+
+# Other Celery Settings
+CELERY_ENABLE_UTC = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TASK_CREATE_MISSING_QUEUES = True
+
+# Additional settings for compatibility
+accept_content = ["json"]
+task_serializer = "json"
+result_serializer = "json"
+timezone = "UTC"
+task_ignore_result = True
+broker_connection_retry_on_startup = True
+task_create_missing_queues = True
+worker_max_tasks_per_child = 1  # Process one large task then restart
+worker_max_memory_per_child = 16 * 1024 * 1024  # 16GB memory limit
+worker_prefetch_multiplier = 1  # Don't prefetch to save memory
+
+# Additional high-memory video processing settings
+CELERY_WORKER_DISABLE_RATE_LIMITS = True  # No rate limits for intensive tasks
+CELERY_TASK_ALWAYS_EAGER = False  # Never run tasks synchronously
+CELERY_TASK_EAGER_PROPAGATES = False  # Don't propagate exceptions in eager mode
+CELERY_WORKER_POOL = 'prefork'  # Use prefork pool for better memory isolation
+CELERY_TASK_ACKS_LATE = True  # Acknowledge tasks after completion
+CELERY_WORKER_SEND_TASK_EVENTS = True  # Enable task monitoring
 
 # ========================
 # REDIS CLIENT CONFIGURATION

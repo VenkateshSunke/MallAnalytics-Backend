@@ -2,15 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.http import JsonResponse
-from .tasks import (
-    add_movement_log_to_queue, 
-    get_queue_status, 
-    clear_movement_logs_queue,
-    test_celery_task,
-    process_movement_logs_batch,
-    start_visit,
-    end_visit
-)
+
 from .models import MovementLog
 from core.models import UserMovement, Visit, User
 import logging
@@ -141,14 +133,14 @@ class AddMovementLogView(APIView):
                     location = 'Unknown_Location'
             
             # Queue the movement log for identified user (use database user_id, not face recognition name)
-            queue_task = add_movement_log_to_queue.delay(
-                user_id=user_id,  # This is the correct database user_id (e.g., U1YL9ZG5P)
-                camera_id=camera_id,
-                location=location,
-                state=data['state'],
-                store=data.get('store'),
-                timestamp=data.get('timestamp')
-            )
+            # queue_task = add_movement_log_to_queue.delay(
+            #     user_id=user_id,  # This is the correct database user_id (e.g., U1YL9ZG5P)
+            #     camera_id=camera_id,
+            #     location=location,
+            #     state=data['state'],
+            #     store=data.get('store'),
+            #     timestamp=data.get('timestamp')
+            # )
             
             # Wait for the queue task to complete before triggering batch processing
             try:
