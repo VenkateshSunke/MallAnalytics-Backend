@@ -33,7 +33,7 @@ services:
     container_name: celery_worker
     restart: unless-stopped
     command: >
-      python -m debugpy --listen 0.0.0.0:5678 -m celery -A wise_backend.celery worker -l info -E --pool=prefork --autoscale=2,1 -Q default,qws
+      python -m debugpy --listen 0.0.0.0:5678 -m celery -A wise_backend.celery worker -l info -E --pool=prefork --autoscale=2,1
     volumes:
       - .:/app
     networks:

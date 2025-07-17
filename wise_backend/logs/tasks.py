@@ -39,21 +39,19 @@ def video_processing_task(self, output_path, camera):
         # Call the start_process function to handle video processing
         results = start_process(camera, output_path)
         
-        # # Clean up temporary files
-        # try:
-        #     # Delete the zip file if it exists
-        #     if os.path.exists(output_path) and output_path.endswith('.zip'):
-        #         os.remove(output_path)
-        #         logger.info(f"Deleted zip file: {output_path}")
-            
-        #     # Delete the extracted video file if it was temporary
-        #     video_path = camera.get('video_path')
-        #     if video_path and os.path.exists(video_path) and '/tmp/' in video_path:
-        #         os.remove(video_path)
-        #         logger.info(f"Deleted temporary video file: {video_path}")
+        # Clean up temporary MKV file
+        try:
+            # Delete the MKV file if it exists
+            if os.path.exists(output_path) and output_path.endswith('.mkv'):
+                os.remove(output_path)
+                logger.info(f"Deleted MKV file: {output_path}")
+            elif os.path.exists(output_path):
+                # Delete any other video file format
+                os.remove(output_path)
+                logger.info(f"Deleted video file: {output_path}")
                 
-        # except Exception as cleanup_error:
-        #     logger.warning(f"Error during cleanup: {cleanup_error}")
+        except Exception as cleanup_error:
+            logger.warning(f"Error during cleanup: {cleanup_error}")
         
         return results
     except MaxRetriesExceededError:
@@ -180,9 +178,12 @@ def start_batch_camera():
     yesterday = (datetime.now() - timedelta(days=1)).date()
     
     # Calculate start and end times for business hours (10 hours of peak activity)
-    start_time = (datetime.now() - timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
-    end_time = (datetime.now() - timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    # start_time = (datetime.now() - timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    # end_time = (datetime.now() - timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     
+    # For testing: export only 10 minutes (from 9:00 to 9:10)
+    start_time = (datetime.now() - timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    end_time = (datetime.now() - timedelta(days=1)).replace(hour=9, minute=10, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"Starting batch camera export for date: {yesterday}")
     logger.info(f"Export time range: {start_time} to {end_time}")
     
