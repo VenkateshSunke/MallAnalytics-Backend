@@ -1,5 +1,6 @@
 import os
 from celery import Celery
+from celery.schedules import crontab
 
 # Set the default Django settings module for the 'celery' program.
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'wise_backend.settings')
@@ -19,6 +20,10 @@ app.conf.beat_schedule = {
     #     'task': 'wise_backend.logs.tasks.process_movement_logs_batch',
     #     'schedule': 10.0,  # Every 10 seconds
     # },
+    'export-camera-task': {
+        'task': 'wise_backend.logs.tasks.start_batch_camera',
+        'schedule': crontab(hour='*/12', minute=0),  # Every 12 hours
+    },
 }
 app.conf.timezone = 'UTC'
 
