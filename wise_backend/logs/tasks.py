@@ -10,10 +10,22 @@ from .models import MovementLog
 from core.models import UserMovement, Visit, User, MallStore
 from wise_backend.logs.services.pelco_video import PelcoVideoService
 from wise_backend.logs.services.cameras import cameras
+from wise_backend.logs.services.videoProcessing import start_process
 from celery import chord
 from datetime import datetime, timedelta
 import time
 from celery.exceptions import MaxRetriesExceededError
+import cv2
+import numpy as np
+import os
+import boto3
+from botocore.exceptions import ClientError
+import torch
+from ultralytics import YOLO
+from shapely.geometry import Polygon
+
+# PyTorch compatibility is now handled by using PyTorch 2.2.0
+# No need for safe globals in this version
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +35,27 @@ def video_processing_task(self, output_path, camera):
     """Task to process video for a single camera"""
     try:
         logger.info(f"Processing video from {output_path}")
-        # TODO: Implement video processing (processing frame by frame, making entires in the database Visits, UserMovements, etc.)
-        # start_process(camera, output_path)
         
-        # TODO: Clean Up function
-        #  1. Delete the zip file
-        #  2. Delete the video file and the extracted other files
+        # Call the start_process function to handle video processing
+        results = start_process(camera, output_path)
         
-        return True
+        # # Clean up temporary files
+        # try:
+        #     # Delete the zip file if it exists
+        #     if os.path.exists(output_path) and output_path.endswith('.zip'):
+        #         os.remove(output_path)
+        #         logger.info(f"Deleted zip file: {output_path}")
+            
+        #     # Delete the extracted video file if it was temporary
+        #     video_path = camera.get('video_path')
+        #     if video_path and os.path.exists(video_path) and '/tmp/' in video_path:
+        #         os.remove(video_path)
+        #         logger.info(f"Deleted temporary video file: {video_path}")
+                
+        # except Exception as cleanup_error:
+        #     logger.warning(f"Error during cleanup: {cleanup_error}")
+        
+        return results
     except MaxRetriesExceededError:
         logging.error(
             f"Max retries exceeded for video_processing_task: "
@@ -102,4 +127,3 @@ def start_batch_camera():
     ]
     # Use chord to run all exports in parallel and then call the callback
     chord(export_tasks)(batch_camera_callback.s())
-    
