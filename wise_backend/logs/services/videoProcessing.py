@@ -2,12 +2,129 @@ import os
 import time
 import logging
 import cv2
+import numpy as np
 from datetime import datetime
 from .awsRecognitionService import AWSRekognitionService
 from .personTracker import PersonTracker
 from .movementLogger import MovementLogger
+from .blueprint_utils import get_blueprint_mapping_by_camera_id, get_blueprint_info_by_camera_id
 
 logger = logging.getLogger(__name__)
+
+def transform_blueprint_to_video_coordinates(blueprint_polygon, transformation_matrix):
+    """
+    Transform blueprint polygon coordinates to video coordinates using perspective transformation
+    
+    Args:
+        blueprint_polygon: List of [x, y] coordinates in blueprint space
+        transformation_matrix: 3x3 perspective transformation matrix
+    
+    Returns:
+        List of [x, y] coordinates in video space
+    """
+    try:
+        if not blueprint_polygon or len(blueprint_polygon) < 3:
+            return None
+        
+        # Convert to numpy array and reshape for perspectiveTransform
+        pts = np.array(blueprint_polygon, dtype=np.float32).reshape(-1, 1, 2)
+        
+        # Apply perspective transformation
+        video_pts = cv2.perspectiveTransform(pts, transformation_matrix)
+        
+        # Convert back to list of [x, y] coordinates
+        video_polygon = [tuple(map(int, pt[0])) for pt in video_pts]
+        
+        return video_polygon
+        
+    except Exception as e:
+        logger.error(f"Error transforming blueprint coordinates to video coordinates: {e}")
+        return None
+
+def draw_store_polygons(frame, stores, calibration_data=None):
+    """
+    Draw store polygons on the frame
+    
+    Args:
+        frame: OpenCV frame to draw on
+        stores: Dictionary of store configurations with polygon data
+        calibration_data: Calibration data containing transformation matrices
+    
+    Returns:
+        frame: Frame with store polygons drawn
+    """
+    frame_with_stores = frame.copy()
+    
+    for store_id, store in stores.items():
+        # Get polygon data - try different possible keys
+        polygon = store.get('video_polygon') or store.get('polygon')
+        
+        if not polygon or len(polygon) < 3:
+            continue
+            
+        try:
+            # If we have calibration data and transformation matrices, transform blueprint coordinates
+            if calibration_data and 'store_matrices' in calibration_data:
+                store_matrices = calibration_data['store_matrices']
+                if store_id in store_matrices:
+                    # Get the transformation matrix for this store
+                    matrix = np.array(store_matrices[store_id], dtype=np.float32)
+                    
+                    # Transform blueprint coordinates to video coordinates
+                    video_polygon = transform_blueprint_to_video_coordinates(polygon, matrix)
+                    
+                    if video_polygon:
+                        polygon = video_polygon
+                        logger.debug(f"Transformed polygon for store {store_id} using calibration matrix")
+                    else:
+                        logger.warning(f"Failed to transform polygon for store {store_id}")
+                        continue
+                else:
+                    logger.warning(f"No transformation matrix found for store {store_id}")
+                    continue
+            else:
+                # No calibration data, use polygon as-is (assume it's already in video coordinates)
+                logger.debug(f"Using polygon as-is for store {store_id} (no calibration data)")
+            
+            # Convert polygon points to numpy array for drawing
+            if isinstance(polygon[0], (list, tuple)):
+                # Already in correct format [[x1,y1], [x2,y2], ...]
+                pts = np.array(polygon, np.int32).reshape((-1, 1, 2))
+            else:
+                # Flat list format [x1,y1,x2,y2,...]
+                pts = np.array(polygon, np.int32).reshape((-1, 1, 2))
+            
+            # Draw filled semi-transparent polygon
+            overlay = frame_with_stores.copy()
+            cv2.fillPoly(overlay, [pts], (0, 255, 0))  # Green fill
+            cv2.addWeighted(overlay, 0.3, frame_with_stores, 0.7, 0, frame_with_stores)
+            
+            # Draw polygon outline
+            cv2.polylines(frame_with_stores, [pts], True, (0, 255, 0), 2)
+            
+            # Draw store name at centroid
+            centroid = np.mean(pts, axis=0).astype(int)[0]
+            store_name = store.get('name', store_id)
+            
+            # Draw text background
+            text_size = cv2.getTextSize(store_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+            cv2.rectangle(frame_with_stores, 
+                         (centroid[0] - text_size[0]//2 - 5, centroid[1] - text_size[1] - 5),
+                         (centroid[0] + text_size[0]//2 + 5, centroid[1] + 5),
+                         (0, 0, 0), -1)
+            
+            # Draw store name
+            cv2.putText(frame_with_stores, store_name, 
+                       (centroid[0] - text_size[0]//2, centroid[1]), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            logger.debug(f"Drew polygon for store {store_name} with {len(polygon)} points")
+            
+        except Exception as e:
+            logger.error(f"Error drawing polygon for store {store_id}: {e}")
+            continue
+    
+    return frame_with_stores
 
 def start_process(camera, output_path):
     """
@@ -70,8 +187,26 @@ def start_process(camera, output_path):
         if not video_writer.isOpened():
             raise Exception("Failed to create video writer")
         
-        # Get stores configuration
-        stores = camera.get('stores', {})
+        # Get blueprint mapping data based on camera ID
+        camera_id = str(camera.get('id', 'unknown'))
+        blueprint_mapping = get_blueprint_mapping_by_camera_id(camera_id)
+        
+        if blueprint_mapping:
+            logger.info(f"Using blueprint mapping for camera {camera_id}")
+            stores = blueprint_mapping.get('stores', {})
+            calibration_data = blueprint_mapping.get('calibration', {})
+            logger.info(f"Found {len(stores)} stores in blueprint mapping")
+            if calibration_data and 'store_matrices' in calibration_data:
+                logger.info(f"Found calibration data with {len(calibration_data['store_matrices'])} transformation matrices")
+            else:
+                logger.warning("No calibration data found in blueprint mapping")
+        else:
+            logger.warning(f"No blueprint mapping found for camera {camera_id}, using default stores config")
+            stores = camera.get('stores', {})
+            calibration_data = None
+        
+        # Track store entries to avoid duplicate logging
+        store_entry_logged = {}  # person_id -> {store_id: timestamp}
         
         # Processing statistics
         frame_count = 0
@@ -121,6 +256,9 @@ def start_process(camera, output_path):
                 # Draw bounding boxes and annotations on frame
                 frame_with_annotations = frame.copy()
                 
+                # Draw store polygons FIRST (so they appear behind other elements)
+                frame_with_annotations = draw_store_polygons(frame_with_annotations, stores, calibration_data)
+                
                 # Draw face detection bounding boxes
                 for face in face_detections:
                     bbox = face['bbox']
@@ -139,7 +277,7 @@ def start_process(camera, output_path):
                     cv2.putText(frame_with_annotations, label, (x, y - 5), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 
-                # Draw person tracking bounding boxes
+                # Draw person tracking bounding boxes and handle store entries
                 for person_id, person in tracked_people.items():
                     bbox = person['bbox']
                     x, y, w, h = bbox
@@ -151,32 +289,70 @@ def start_process(camera, output_path):
                     # Determine activity type
                     activity_type = 'walking' if person.get('is_moving', False) else 'standing'
                     
+                    # Check for store entry
+                    current_store = person.get('current_store')
+                    if current_store and current_store in stores:
+                        # Check if this is a new store entry (not logged recently)
+                        current_timestamp = datetime.now()
+                        if (person_id not in store_entry_logged or 
+                            current_store not in store_entry_logged[person_id] or
+                            (current_timestamp - store_entry_logged[person_id][current_store]).seconds > 5):
+                            
+                            # Log store entry
+                            store_name = stores[current_store].get('name', current_store)
+                            logger.info(f"Person {person_id} entered store: {store_name}")
+                            
+                            # Initialize tracking for this person if needed
+                            if person_id not in store_entry_logged:
+                                store_entry_logged[person_id] = {}
+                            
+                            store_entry_logged[person_id][current_store] = current_timestamp
+                            
+                            # Log to movement logger if we have a valid user_id
+                            if user_id:
+                                movement_logger.log_person_movement(
+                                    person_id=user_id,
+                                    location=location,
+                                    timestamp=current_timestamp,
+                                    camera_id=camera_id,
+                                    confidence=person.get('confidence', 1.0),
+                                    store_id=current_store,
+                                    activity_type='store_entered',
+                                    bbox=bbox,
+                                    face_id=face_id
+                                )
+                                logger.info(f"Logged store entry for user {user_id} into {store_name}")
+                    
                     # Draw person bounding box (blue for tracked persons)
                     cv2.rectangle(frame_with_annotations, (x, y), (x + w, y + h), (255, 0, 0), 2)
                     
                     # Draw person ID and activity (enhanced like BlueprintTrack)
                     display_name = person_tracker.get_person_display_name(person_id)
                     person_label = f"{display_name} ({activity_type})"
+                    if current_store:
+                        store_name = stores[current_store].get('name', current_store)
+                        person_label += f" in {store_name}"
+                    
                     label_size = cv2.getTextSize(person_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
                     cv2.rectangle(frame_with_annotations, (x, y + h), 
                                  (x + label_size[0], y + h + label_size[1] + 10), (255, 0, 0), -1)
                     cv2.putText(frame_with_annotations, person_label, (x, y + h + label_size[1] + 5), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                     
-                    # Only log movement if we have a valid user_id (registered person)
+                    # Log general movement if we have a valid user_id (registered person)
                     if user_id:
                         movement_logger.log_person_movement(
                             person_id=user_id,  # Use actual user_id instead of tracking ID
                             location=location,
                             timestamp=datetime.now(),
-                            camera_id=str(camera.get('id', 'unknown')),
+                            camera_id=camera_id,
                             confidence=person.get('confidence', 1.0),
                             store_id=person.get('current_store'),
                             activity_type=activity_type,
                             bbox=bbox,
                             face_id=face_id
                         )
-                        logger.info(f"Logged movement for user {user_id} at location {location}")
+                        logger.debug(f"Logged movement for user {user_id} at location {location}")
                     else:
                         logger.debug(f"Skipping movement log for unregistered person {person_id}")
                 
@@ -217,7 +393,12 @@ def start_process(camera, output_path):
             'input_video_path': video_path,
             'processed_video_path': processed_output_path if video_writer else None,
             'performance_timings': timings,
-            'aws_frame_skip': aws_frame_skip
+            'aws_frame_skip': aws_frame_skip,
+            'camera_id': camera_id,
+            'blueprint_used': bool(blueprint_mapping),
+            'stores_processed': len(stores),
+            'store_entries_logged': len(store_entry_logged),
+            'calibration_available': bool(calibration_data and 'store_matrices' in calibration_data)
         }
         
         logger.info(f"Video processing completed: {results}")

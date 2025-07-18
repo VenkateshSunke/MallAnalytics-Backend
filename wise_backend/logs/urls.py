@@ -22,4 +22,7 @@ urlpatterns = [
     
     # Debugging endpoints
     path('user-visit-detail/', views.UserVisitDetailView.as_view(), name='user-visit-detail'),
+    
+    # Video processing test endpoint
+    path('test-video-processing/', views.TestVideoProcessingView.as_view(), name='test-video-processing'),
 ] 

@@ -233,6 +233,28 @@ class PersonTracker:
         
         return best_match
 
+    def update_store_status(self, person_id, person, stores, current_time, frame_number):
+        """Update store status for a person"""
+        old_store = person.get('current_store')
+        current_store = None
+        
+        # Check which store the person is in
+        for store_id, store in stores.items():
+            # Try to get video_polygon first (transformed coordinates), then fall back to polygon
+            store_polygon = store.get('video_polygon') or store.get('polygon')
+            if store_polygon and self.is_person_in_store(person['bbox'], store_polygon):
+                current_store = store_id
+                break
+        
+        person['current_store'] = current_store
+        
+        # Log store entry/exit events
+        if old_store != current_store:
+            if old_store is not None:
+                logger.info(f"Person {person_id} exited store {old_store}")
+            if current_store is not None:
+                logger.info(f"Person {person_id} entered store {current_store}")
+
     def create_new_track(self, detection, frame_number, current_time, stores):
         """Create a new track for a detection"""
         person_id = f"person_{self.next_id}"
@@ -241,6 +263,7 @@ class PersonTracker:
         # Determine current store
         current_store = None
         for store_id, store in stores.items():
+            # Try to get video_polygon first (transformed coordinates), then fall back to polygon
             store_polygon = store.get('video_polygon') or store.get('polygon')
             if store_polygon and self.is_person_in_store(detection, store_polygon):
                 current_store = store_id
@@ -308,27 +331,6 @@ class PersonTracker:
         
         # Update person's movement status
         person['is_moving'] = movement_state['is_moving']
-
-    def update_store_status(self, person_id, person, stores, current_time, frame_number):
-        """Update store status for a person"""
-        old_store = person.get('current_store')
-        current_store = None
-        
-        # Check which store the person is in
-        for store_id, store in stores.items():
-            store_polygon = store.get('video_polygon') or store.get('polygon')
-            if store_polygon and self.is_person_in_store(person['bbox'], store_polygon):
-                current_store = store_id
-                break
-        
-        person['current_store'] = current_store
-        
-        # Log store entry/exit events
-        if old_store != current_store:
-            if old_store is not None:
-                logger.info(f"Person {person_id} exited store {old_store}")
-            if current_store is not None:
-                logger.info(f"Person {person_id} entered store {current_store}")
 
     def analyze_frame(self, frame):
         """Analyze frame using YOLO for person detection"""

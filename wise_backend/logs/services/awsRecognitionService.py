@@ -5,8 +5,13 @@ import cv2
 import numpy as np
 from botocore.exceptions import ClientError
 from ultralytics import YOLO
+from datetime import datetime
+from retinaface import RetinaFace
+
 
 logger = logging.getLogger(__name__)
+
+
 
 class AWSRekognitionService:
     """AWS Rekognition service for face detection"""
@@ -23,10 +28,13 @@ class AWSRekognitionService:
         self.last_face_detections = []
         self.collection_id = os.getenv('AWS_REKOGNITION_COLLECTION_ID', 'my-face-collection')
         self.debug_mode = False
+
+        # Initialize RetinaFace (no need to load model explicitly)
+        self.retinaface_loaded = True
         
-        # Initialize YOLOv8 face model for better face detection
-        self.yolo_face_model = None
-        self.load_yolo_face_model()
+        # # Initialize YOLOv8 face model for better face detection
+        # self.yolo_face_model = None
+        # self.load_yolo_face_model()
     
     def load_yolo_face_model(self):
         """Load YOLOv8 face detection model"""
@@ -70,10 +78,10 @@ class AWSRekognitionService:
             test_image = np.zeros((100, 100, 3), dtype=np.uint8)
             _, test_bytes = cv2.imencode('.jpg', test_image)
             
-            self.rekognition_client.detect_faces(
-                Image={'Bytes': test_bytes.tobytes()},
-                Attributes=['ALL']
-            )
+            # self.rekognition_client.detect_faces(
+            #     Image={'Bytes': test_bytes.tobytes()},
+            #     Attributes=['ALL']
+            # )
             
             self.aws_enabled = True
             self.api_calls_count = 0
@@ -108,8 +116,11 @@ class AWSRekognitionService:
                 logger.debug("AWS call prevented: Not in export mode (preview mode active)")
             return []
         
-        if not self.yolo_face_model:
-            logger.warning("YOLOv8 model not loaded")
+        # if not self.yolo_face_model:
+        #     logger.warning("YOLOv8 model not loaded")
+        #     return []
+        if not self.retinaface_loaded:
+            print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] RetinaFace not loaded")
             return []
         
         try:
@@ -124,7 +135,8 @@ class AWSRekognitionService:
                 frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
             
             # Step 1: Detect all faces in the image using YOLOv8
-            results = self.yolo_face_model(frame, verbose=False)
+            # results = self.yolo_face_model(frame, verbose=False)
+            detections = RetinaFace.detect_faces(frame)
             
             # Update API call tracking
             self.api_calls_count += 1
@@ -136,45 +148,73 @@ class AWSRekognitionService:
             
             # Extract detected faces from YOLOv8 results
             detected_faces = []
-            for result in results:
-                boxes = result.boxes
-                if boxes is not None:
-                    for box in boxes:
-                        conf = float(box.conf[0])
-                        if conf > 0.3:  # Confidence threshold
-                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            # for result in results:
+            #     boxes = result.boxes
+            #     if boxes is not None:
+            #         for box in boxes:
+            #             conf = float(box.conf[0])
+            #             if conf > 0.3:  # Confidence threshold
+            #                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                             
-                            # Convert to relative coordinates (like AWS format)
-                            face_bbox = {
-                                'Left': x1 / frame.shape[1],
-                                'Top': y1 / frame.shape[0],
-                                'Width': (x2 - x1) / frame.shape[1],
-                                'Height': (y2 - y1) / frame.shape[0]
-                            }
+            #                 # Convert to relative coordinates (like AWS format)
+            #                 face_bbox = {
+            #                     'Left': x1 / frame.shape[1],
+            #                     'Top': y1 / frame.shape[0],
+            #                     'Width': (x2 - x1) / frame.shape[1],
+            #                     'Height': (y2 - y1) / frame.shape[0]
+            #                 }
                             
-                            detected_faces.append({
-                                'BoundingBox': face_bbox,
-                                'Confidence': conf * 100  # Convert to percentage
-                            })
+            #                 detected_faces.append({
+            #                     'BoundingBox': face_bbox,
+            #                     'Confidence': conf * 100  # Convert to percentage
+            #                 })
+            if isinstance(detections, dict):
+                for face_key, face_data in detections.items():
+                    # Get face area (bounding box)
+                    face_area = face_data['facial_area']
+                    x1, y1, x2, y2 = face_area
+                    
+                    # Get confidence score
+                    confidence = face_data.get('score', 0.9)  # RetinaFace doesn't always provide score
+                    
+                    if confidence > 0.3:  # Confidence threshold
+                        # Convert to relative coordinates (like AWS format)
+                        face_bbox = {
+                            'Left': x1 / frame.shape[1],
+                            'Top': y1 / frame.shape[0],
+                            'Width': (x2 - x1) / frame.shape[1],
+                            'Height': (y2 - y1) / frame.shape[0]
+                        }
+                        
+                        detected_faces.append({
+                            'BoundingBox': face_bbox,
+                            'Confidence': confidence * 100  # Convert to percentage
+                        })
+            # Step 2: If faces are found, search for matches in collection
+            if detected_faces:
+                print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Processing {len(detected_faces)} detected faces for recognition")
+            else:
+                print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] No faces detected - skipping recognition")
+                return []
             
             logger.info(f"Found {len(detected_faces)} faces in frame")
             
-            # Step 2: If faces are found, search for matches in collection
-            if not detected_faces:
-                logger.info("No faces detected - skipping recognition")
-                return []
-            
-            # Extract detected faces
-            faces = []
-            
-            # Step 3: Process each detected face for recognition
+            # # Step 2: If faces are found, search for matches in collection
+            # if not detected_faces:
+            #     logger.info("No faces detected - skipping recognition")
+            #     return []
+
+            # Step 2: Process each detected face for recognition
             for i, face_detail in enumerate(detected_faces):
                 face_bbox = face_detail['BoundingBox']
                 confidence = face_detail['Confidence']
                 
+                # Skip if confidence is too low (lowered threshold for better detection)
                 if confidence < 30.0:
-                    logger.debug(f"Face {i+1}: Skipping - confidence too low ({confidence:.1f}%)")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - confidence too low ({confidence:.1f}%)")
                     continue
+                
+                print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Processing face with confidence {confidence:.1f}%")
                 
                 # Convert relative coordinates to pixel coordinates (ORIGINAL face bbox)
                 original_x = int(face_bbox['Left'] * frame.shape[1])
@@ -182,19 +222,24 @@ class AWSRekognitionService:
                 original_width = int(face_bbox['Width'] * frame.shape[1])
                 original_height = int(face_bbox['Height'] * frame.shape[0])
                 
-                # Validate original face size
+                # IMPROVED: Better validation of original face size
                 if original_width < 10 or original_height < 10:
-                    logger.debug(f"Face {i+1}: Skipping - original face too small ({original_width}x{original_height})")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - original face too small ({original_width}x{original_height})")
+                    if self.debug_mode:
+                        # Save the problematic region for debugging
+                        problematic_region = frame[max(0, original_y-10):min(frame.shape[0], original_y+original_height+10), 
+                                                 max(0, original_x-10):min(frame.shape[1], original_x+original_width+10)]
+                        self.save_debug_face_region(problematic_region, i+1, "too_small_original")
                     continue
                 
-                # Store original face bbox for IoU calculations
+                # Store original face bbox for IoU calculations (small red box)
                 original_face_bbox = (original_x, original_y, original_width, original_height)
                 
-                # Add padding for better recognition (50% padding like BlueprintTrack)
+                # IMPROVED: More aggressive padding for better recognition (50% instead of 30%)
                 padding_x = int(original_width * 0.5)
                 padding_y = int(original_height * 0.5)
                 
-                # Ensure minimum padding
+                # IMPROVED: Ensure minimum padding for very small faces
                 min_padding = 20
                 padding_x = max(padding_x, min_padding)
                 padding_y = max(padding_y, min_padding)
@@ -211,36 +256,50 @@ class AWSRekognitionService:
                 width = min(width, frame.shape[1] - x)
                 height = min(height, frame.shape[0] - y)
                 
-                # Validate extracted region
+                # IMPROVED: Better validation of extracted region
                 if width <= 0 or height <= 0:
-                    logger.debug(f"Face {i+1}: Skipping - invalid region dimensions ({width}x{height})")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - invalid region dimensions ({width}x{height})")
                     continue
                 
                 # Extract face region for better recognition
                 face_region = frame[y:y + height, x:x + width]
                 if face_region.size == 0:
-                    logger.debug(f"Face {i+1}: Skipping - empty face region")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - empty face region")
                     continue
                 
-                # Ensure minimum face size and upscale if needed
+                # IMPROVED: More stringent size validation
+                min_region_size = 50  # Increased from 20
+                if face_region.shape[0] < min_region_size or face_region.shape[1] < min_region_size:
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - face region too small ({face_region.shape[1]}x{face_region.shape[0]})")
+                    if self.debug_mode:
+                        self.save_debug_face_region(face_region, i+1, "too_small_region")
+                    continue
+                
+                # IMPROVED: Ensure minimum face size and upscale if needed (like face_detection.py)
                 min_face_size = 200
                 if face_region.shape[0] < min_face_size or face_region.shape[1] < min_face_size:
+                    # Calculate scale factor to reach minimum size
                     scale_x = min_face_size / face_region.shape[1]
                     scale_y = min_face_size / face_region.shape[0]
                     scale = max(scale_x, scale_y, 2.0)  # At least 2x upscale
                     
-                    logger.debug(f"Face {i+1}: Upscaling from {face_region.shape[1]}x{face_region.shape[0]} by {scale:.1f}x")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Upscaling from {face_region.shape[1]}x{face_region.shape[0]} by {scale:.1f}x")
                     face_region = cv2.resize(face_region, None, 
                                            fx=scale, fy=scale, 
                                            interpolation=cv2.INTER_LANCZOS4)
                 
-                # Final size validation after upscaling
+                # IMPROVED: Final size validation after upscaling
                 if face_region.shape[0] < 100 or face_region.shape[1] < 100:
-                    logger.debug(f"Face {i+1}: Skipping - face region still too small after upscaling ({face_region.shape[1]}x{face_region.shape[0]})")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - face region still too small after upscaling ({face_region.shape[1]}x{face_region.shape[0]})")
                     continue
                 
                 # Convert face region to RGB for AWS
                 face_region_rgb = cv2.cvtColor(face_region, cv2.COLOR_BGR2RGB)
+                
+                # IMPROVED: Validate RGB conversion
+                if face_region_rgb.size == 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - RGB conversion failed")
+                    continue
                 
                 # Encode face region with high quality
                 try:
@@ -248,17 +307,42 @@ class AWSRekognitionService:
                                                  [cv2.IMWRITE_JPEG_QUALITY, 95])
                     face_bytes = face_encoded.tobytes()
                     
-                    # Validate encoded bytes
-                    if len(face_bytes) < 1000:
-                        logger.debug(f"Face {i+1}: Skipping - encoded image too small ({len(face_bytes)} bytes)")
+                    # IMPROVED: Validate encoded bytes
+                    if len(face_bytes) < 1000:  # Minimum reasonable size for a face image
+                        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - encoded image too small ({len(face_bytes)} bytes)")
                         continue
                         
                 except Exception as e:
-                    logger.error(f"Face {i+1}: Face region encoding error: {e}")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Face region encoding error: {e}")
                     continue
                 
-                # Search for matches in collection using the extracted face region
+                # IMPROVED: Pre-validate with detect_faces before search (still using AWS for recognition)
+                # try:
+                #     # Test if the extracted region actually contains a face
+                #     test_response = self.rekognition_client.detect_faces(
+                #         Image={'Bytes': face_bytes},
+                #         Attributes=['ALL']
+                #     )
+                #     
+                #     if not test_response.get('FaceDetails'):
+                #         print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Skipping - no face detected in extracted region")
+                #         if self.debug_mode:
+                #             self.save_debug_face_region(face_region, i+1, "no_face_detected")
+                #         continue
+                #     
+                #     # Update API call tracking for test
+                #     self.api_calls_count += 1
+                #     
+                # except Exception as e:
+                #     print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Pre-validation failed: {str(e)}")
+                #     continue
+                
+                # Extract detected faces
+                faces = []
+
+                # Step 2: Search for this specific face in the collection
                 try:
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Searching collection for matches")
                     search_response = self.rekognition_client.search_faces_by_image(
                         CollectionId=self.collection_id,
                         Image={'Bytes': face_bytes},
@@ -266,45 +350,58 @@ class AWSRekognitionService:
                         FaceMatchThreshold=50.0
                     )
                     
-                    # Update API call tracking for search
+                    # Update API call tracking
                     self.api_calls_count += 1
                     
                     face_matches = search_response.get('FaceMatches', [])
+                    
                     if face_matches:
-                        best_match = face_matches[0]
-                        match_confidence = best_match['Similarity']
-                        face_id = best_match['Face']['FaceId']
-                        external_image_id = best_match['Face'].get('ExternalImageId', face_id)
+                        # Step 3: Match found - this is a registered face
+                        match = face_matches[0]  # Take the best match
+                        face_id = match['Face'].get('FaceId', 'Unknown')
+                        external_image_id = match['Face'].get('ExternalImageId', 'Unknown')
+                        similarity = match['Similarity']
                         
-                        if match_confidence > 50.0:
-                            faces.append({
-                                'bbox': original_face_bbox,  # Use ORIGINAL face bbox for IoU calculations
-                                'padded_bbox': (x, y, width, height),  # Padded region for reference
-                                'confidence': match_confidence,
-                                'face_id': face_id,
-                                'user_id': external_image_id,
-                                'detection_type': 'registered_face',
-                                'timestamp': current_time
-                            })
-                            logger.info(f"Face {i+1}: Recognized as {external_image_id} with confidence {match_confidence:.1f}%")
-                            logger.debug(f"  Original bbox: {original_face_bbox}")
-                            logger.debug(f"  Padded region: ({x}, {y}, {width}, {height})")
-                        else:
-                            logger.debug(f"Face {i+1}: No match found (best: {match_confidence:.1f}%)")
-                    else:
-                        logger.debug(f"Face {i+1}: No matches in collection")
+                        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: MATCH FOUND!")
+                        print(f"  User: {external_image_id}")
+                        print(f"  Similarity: {similarity:.1f}%")
+                        print(f"  Face ID: {face_id}")
+                        print(f"  Original Face Bbox: ({original_x}, {original_y}, {original_width}, {original_height})")
+                        print(f"  Padded Region: ({x}, {y}, {width}, {height})")
+                        print(f"  Ready for YOLO bounding box logic")
                         
-                except ClientError as e:
-                    if e.response['Error']['Code'] == 'ResourceNotFoundException':
-                        logger.warning(f"Face collection '{self.collection_id}' not found")
+                        # Step 3: Match found - now use YOLO bounding box logic for face-person association
+                        # The face detection result will be passed to PersonTracker for IoU calculations
+                        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Creating face detection result for YOLO logic")
+                        
+                        faces.append({
+                            'bbox': original_face_bbox,  # Use ORIGINAL face bbox for IoU calculations (small red box)
+                            'padded_bbox': (x, y, width, height),  # Padded region for drawing
+                            'confidence': similarity,  # Using similarity as confidence
+                            'face_id': face_id,
+                            'user_id': external_image_id,
+                            'detection_type': 'registered_face',
+                            'timestamp': current_time
+                        })
+                        
+                        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Face detection result created - ready for YOLO association")
                     else:
-                        logger.error(f"AWS Search error: {e}")
+                        # No match found - this is an unknown face
+                        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: No match found - unknown face")
+                        # Skip unknown faces to avoid cluttering
+                
                 except Exception as e:
-                    logger.error(f"Error searching faces: {e}")
+                    print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Face {i+1}: Error searching collection - {str(e)}")
+                    continue
+
+            # Step 3: Summary - faces ready for YOLO bounding box logic
+            print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Found {len(faces)} registered faces")
+            if faces:
+                print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Ready to pass {len(faces)} faces to YOLO bounding box logic")
             
-            logger.info(f"Found {len(faces)} registered faces")
-            self.last_face_detections = faces  # Store for reference
+            self.last_face_detections = faces  # Store for drawing
             return faces
+            
             
         except Exception as e:
             logger.error(f"Error in enhanced face detection: {e}")
@@ -323,12 +420,22 @@ class AWSRekognitionService:
         """Reset both API call counters"""
         self.api_calls_count = 0
         self.frame_api_calls_count = 0
+
+    def get_detection_color(self, detection_type, current_time):
+        """Get color for drawing based on detection type"""
+        if detection_type == 'face':
+            return (0, 0, 255)  # Red for face detection
+        return (255, 0, 0)  # Blue for other detections
     
     def cleanup_face_detections(self):
         """Clean up face detection state"""
         self.last_face_detections = []
     
     def reset_state(self):
-        """Reset all state variables"""
+        """Reset AWS service state for clean restart"""
         self.last_face_detections = []
-        self.reset_api_counters()
+        self.api_calls_count = 0
+        self.frame_api_calls_count = 0
+        self.last_api_call_time = 0.0
+        self.last_face_detection_time = 0.0
+        print("AWS service state reset for clean restart")

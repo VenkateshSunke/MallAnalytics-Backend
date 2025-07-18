@@ -2,7 +2,16 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.http import JsonResponse
-
+from .tasks import (
+    # add_movement_log_to_queue, 
+    # get_queue_status, 
+    # clear_movement_logs_queue,
+    # test_celery_task,
+    # process_movement_logs_batch,
+    # start_visit,
+    # end_visit,
+    start_process
+)
 from .models import MovementLog
 from core.models import UserMovement, Visit, User
 import logging
@@ -500,5 +509,68 @@ class UserVisitDetailView(APIView):
             logger.error(f"Error getting user visit details: {e}")
             return Response(
                 {'error': f'Failed to get user visit details: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class TestVideoProcessingView(APIView):
+    """
+    POST /api/logs/test-video-processing/ - Test video processing function
+    """
+    def post(self, request):
+        try:
+            # Get parameters from request
+            video_path = request.data.get('video_path')
+            camera_id = request.data.get('camera_id', 'test_camera_001')
+            camera_name = request.data.get('camera_name', 'Test Camera')
+            
+            if not video_path:
+                return Response(
+                    {'error': 'video_path is required'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Create a test camera configuration
+            camera_config = {
+                'id': camera_id,
+                'name': camera_name,
+                'selected_tracks': [1, 2],
+                'aws_enabled': True,  # Always enabled for testing
+                'stores': {
+                    'store_001': {
+                        'name': 'Test Store 1',
+                        'video_polygon': [[100, 100], [300, 100], [300, 300], [100, 300]],
+                        'is_mapped': True
+                    },
+                    'store_002': {
+                        'name': 'Test Store 2',
+                        'video_polygon': [[400, 100], [600, 100], [600, 300], [400, 300]],
+                        'is_mapped': True
+                    }
+                }
+            }
+            
+            logger.info(f"Testing video processing with camera: {camera_config}")
+            logger.info(f"Video path: {video_path}")
+            
+            # Call the start_process function directly
+            results = start_process(camera_config, video_path)
+            
+            return Response({
+                'message': 'Video processing completed successfully',
+                'results': results,
+                'camera_config': camera_config
+            }, status=status.HTTP_200_OK)
+            
+        except FileNotFoundError as e:
+            logger.error(f"Video file not found: {e}")
+            return Response(
+                {'error': f'Video file not found: {str(e)}'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error in video processing: {e}")
+            return Response(
+                {'error': f'Video processing failed: {str(e)}'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             ) 
