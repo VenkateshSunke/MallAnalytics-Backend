@@ -17,6 +17,7 @@ urlpatterns = [
     path("visits/<int:visit_id>/", views.GetVisitView.as_view()),
     path("movements/", views.CreateMovementView.as_view()),
     path("movements/<int:visit_id>/", views.MovementByVisitView.as_view()),
+    path("movements/<int:visit_id>/export_csv/", views.ExportMovementsCSV.as_view(), name="export-movements-csv"),
     path("stores/", views.CreateListStoreView.as_view()),
     path("interests/", views.CreateListInterestView.as_view()),
     path("user-interests/", views.CreateUserInterestView.as_view()),

@@ -88,7 +88,7 @@ def validate_html_content(html_content):
     
     return html_content
 
-def create_sendgrid_campaign(step, sender_id, suppression_group_id=None):
+def create_sendgrid_campaign(step, sender_id, suppression_group_id=121794):
     """Create a new SendGrid campaign"""
     try:
         # Validate required fields
