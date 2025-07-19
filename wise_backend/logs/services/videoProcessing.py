@@ -3,6 +3,8 @@ import time
 import logging
 import cv2
 import numpy as np
+import subprocess
+import json
 from datetime import datetime
 from .awsRecognitionService import AWSRekognitionService
 from .personTracker import PersonTracker
@@ -158,34 +160,77 @@ def start_process(camera, output_path):
         if not video_path or not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
-        # Open video
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError(f"Could not open video file: {video_path}")
+        # Get video properties using ffprobe
+        def get_video_info():
+            try:
+                cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v', video_path]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                streams_info = json.loads(result.stdout)
+                streams = streams_info.get('streams', [])
+                
+                # Use second video track if available, otherwise first
+                if len(streams) > 1:
+                    stream = streams[1]  # Use second track
+                    stream_selector = '0:v:1'
+                    logger.info(f"Using second video track for processing")
+                elif len(streams) > 0:
+                    stream = streams[0]  # Use first track  
+                    stream_selector = '0:v:0'
+                    logger.info(f"Using first video track for processing")
+                else:
+                    raise ValueError("No video streams found")
+                
+                width = int(stream.get('width', 640))
+                height = int(stream.get('height', 480))
+                
+                # Get FPS
+                fps_str = stream.get('r_frame_rate', '30/1')
+                if '/' in fps_str:
+                    num, den = map(int, fps_str.split('/'))
+                    fps = num / den if den != 0 else 30.0
+                else:
+                    fps = float(fps_str)
+                
+                # Get total frames
+                if 'nb_frames' in stream:
+                    total_frames = int(stream['nb_frames'])
+                else:
+                    duration = float(stream.get('duration', 0))
+                    total_frames = int(duration * fps)
+                
+                return fps, width, height, total_frames, stream_selector
+                
+            except Exception as e:
+                logger.error(f"Error getting video info: {e}")
+                return 30.0, 640, 480, 0, '0:v:0'
         
-        # Get video properties
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30  # Default to 30 FPS
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps, width, height, total_frames, stream_selector = get_video_info()
         
         logger.info(f"Processing video: {width}x{height} @ {fps:.1f}fps, {total_frames} frames")
         
+        # Setup FFmpeg reader process
+        ffmpeg_read_cmd = [
+            'ffmpeg', '-i', video_path,
+            '-map', stream_selector,
+            '-f', 'rawvideo', '-pix_fmt', 'bgr24',
+            '-vsync', '0', '-'
+        ]
+        ffmpeg_reader = subprocess.Popen(ffmpeg_read_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
         # Setup video writer for processed output
         processed_output_path = output_path.replace('.mp4', '_processed.mp4')
-        video_writer = None
         
         output_dir = os.path.dirname(processed_output_path)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         
-        fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')  # type: ignore
-        video_writer = cv2.VideoWriter(processed_output_path, fourcc, fps, (width, height))
-        
-        if not video_writer.isOpened():
-            raise Exception("Failed to create video writer")
+        # Setup FFmpeg writer process
+        ffmpeg_write_cmd = [
+            'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
+            '-s', f'{width}x{height}', '-pix_fmt', 'bgr24', '-r', str(fps),
+            '-i', '-', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', processed_output_path
+        ]
+        ffmpeg_writer = subprocess.Popen(ffmpeg_write_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         
         # Get blueprint mapping data based on camera ID
         camera_id = str(camera.get('id', 'unknown'))
@@ -212,6 +257,7 @@ def start_process(camera, output_path):
         frame_count = 0
         aws_frame_skip = 60  # Process AWS face detection every 60th frame (like BlueprintTrack)
         processing_start_time = time.time()
+        frame_size = height * width * 3
         
         # Performance tracking
         timings = {
@@ -224,9 +270,13 @@ def start_process(camera, output_path):
         # Process frames
         while True:
             try:
-                ret, frame = cap.read()
-                if not ret:
+                # Read frame from FFmpeg
+                raw_frame = ffmpeg_reader.stdout.read(frame_size)
+                if len(raw_frame) != frame_size:
                     break
+                
+                frame = np.frombuffer(raw_frame, dtype=np.uint8)
+                frame = frame.reshape((height, width, 3))
                 
                 current_time = frame_count / fps
                 face_detections = []
@@ -356,9 +406,8 @@ def start_process(camera, output_path):
                     else:
                         logger.debug(f"Skipping movement log for unregistered person {person_id}")
                 
-                # Write annotated frame to output video
-                if video_writer and video_writer.isOpened():
-                    video_writer.write(frame_with_annotations)
+                # Write annotated frame to FFmpeg writer
+                ffmpeg_writer.stdin.write(frame_with_annotations.tobytes())
                 
                 frame_count += 1
                 
@@ -378,9 +427,10 @@ def start_process(camera, output_path):
         tracked_persons = len(tracked_people)
         
         # Cleanup
-        cap.release()
-        if video_writer:
-            video_writer.release()
+        ffmpeg_reader.stdout.close()
+        ffmpeg_reader.wait()
+        ffmpeg_writer.stdin.close()
+        ffmpeg_writer.wait()
         
         # Results
         results = {
@@ -391,7 +441,7 @@ def start_process(camera, output_path):
             'aws_api_calls': aws_calls,
             'tracked_persons': tracked_persons,
             'input_video_path': video_path,
-            'processed_video_path': processed_output_path if video_writer else None,
+            'processed_video_path': processed_output_path,
             'performance_timings': timings,
             'aws_frame_skip': aws_frame_skip,
             'camera_id': camera_id,
