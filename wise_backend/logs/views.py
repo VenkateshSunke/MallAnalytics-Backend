@@ -1,3 +1,4 @@
+import os
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -12,6 +13,7 @@ from .tasks import (
     # end_visit,
     start_process
 )
+from .services.videoProcessing import get_video_info
 from .models import MovementLog
 from core.models import UserMovement, Visit, User
 import logging
@@ -515,7 +517,7 @@ class UserVisitDetailView(APIView):
 
 class TestVideoProcessingView(APIView):
     """
-    POST /api/logs/test-video-processing/ - Test video processing function
+    POST /api/logs/test-video-processing/ - Test video processing function with ffmpeg support
     """
     def post(self, request):
         try:
@@ -523,6 +525,7 @@ class TestVideoProcessingView(APIView):
             video_path = request.data.get('video_path')
             camera_id = request.data.get('camera_id', 'test_camera_001')
             camera_name = request.data.get('camera_name', 'Test Camera')
+            video_track_index = request.data.get('video_track_index', 0)  # Default to first track
             
             if not video_path:
                 return Response(
@@ -552,9 +555,10 @@ class TestVideoProcessingView(APIView):
             
             logger.info(f"Testing video processing with camera: {camera_config}")
             logger.info(f"Video path: {video_path}")
+            logger.info(f"Video track index: {video_track_index}")
             
-            # Call the start_process function directly
-            results = start_process(camera_config, video_path)
+            # Call the start_process function directly with track index
+            results = start_process(camera_config, video_path, video_track_index)
             
             return Response({
                 'message': 'Video processing completed successfully',
@@ -573,4 +577,48 @@ class TestVideoProcessingView(APIView):
             return Response(
                 {'error': f'Video processing failed: {str(e)}'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            ) 
+            )
+
+
+class VideoInfoView(APIView):
+    """
+    POST /api/logs/video-info/ - Get video information and available tracks
+    """
+    def post(self, request):
+        try:
+            video_path = request.data.get('video_path')
+            
+            if not video_path:
+                return Response(
+                    {'error': 'video_path is required'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not os.path.exists(video_path):
+                return Response(
+                    {'error': f'Video file not found: {video_path}'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Get video information using ffmpeg
+            video_info = get_video_info(video_path)
+            
+            if not video_info:
+                return Response(
+                    {'error': 'Could not read video information'}, 
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            return Response({
+                'message': 'Video information retrieved successfully',
+                'video_info': video_info,
+                'video_path': video_path
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error getting video info: {e}")
+            return Response(
+                {'error': f'Failed to get video information: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
