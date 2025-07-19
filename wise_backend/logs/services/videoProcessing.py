@@ -4,6 +4,8 @@ import logging
 import cv2
 import numpy as np
 import ffmpeg
+import signal
+import threading
 from datetime import datetime
 from .awsRecognitionService import AWSRekognitionService
 from .personTracker import PersonTracker
@@ -12,704 +14,571 @@ from .blueprint_utils import get_blueprint_mapping_by_camera_id, get_blueprint_i
 
 logger = logging.getLogger(__name__)
 
+class VideoProcessor:
+    def __init__(self):
+        self.input_process = None
+        self.output_process = None
+        self.processing_active = False
+        self.cleanup_timeout = 10  # seconds
+        
+    def cleanup_processes(self):
+        """Enhanced process cleanup with proper termination"""
+        logger.info("Starting process cleanup...")
+        
+        # Stop processing flag
+        self.processing_active = False
+        
+        # Cleanup output process first
+        if self.output_process:
+            try:
+                if self.output_process.stdin and not self.output_process.stdin.closed:
+                    self.output_process.stdin.close()
+                    
+                # Give process time to flush
+                time.sleep(1)
+                
+                if self.output_process.poll() is None:
+                    logger.info("Terminating output process...")
+                    self.output_process.terminate()
+                    
+                    try:
+                        self.output_process.wait(timeout=self.cleanup_timeout)
+                        logger.info("Output process terminated successfully")
+                    except subprocess.TimeoutExpired:
+                        logger.warning("Output process termination timed out, killing...")
+                        self.output_process.kill()
+                        self.output_process.wait()
+                        
+            except Exception as e:
+                logger.error(f"Error cleaning up output process: {e}")
+                try:
+                    self.output_process.kill()
+                except:
+                    pass
+            
+            self.output_process = None
+        
+        # Cleanup input process
+        if self.input_process:
+            try:
+                if self.input_process.stdout and not self.input_process.stdout.closed:
+                    self.input_process.stdout.close()
+                    
+                if self.input_process.poll() is None:
+                    logger.info("Terminating input process...")
+                    self.input_process.terminate()
+                    
+                    try:
+                        self.input_process.wait(timeout=self.cleanup_timeout)
+                        logger.info("Input process terminated successfully")
+                    except subprocess.TimeoutExpired:
+                        logger.warning("Input process termination timed out, killing...")
+                        self.input_process.kill()
+                        self.input_process.wait()
+                        
+            except Exception as e:
+                logger.error(f"Error cleaning up input process: {e}")
+                try:
+                    self.input_process.kill()
+                except:
+                    pass
+                    
+            self.input_process = None
+        
+        logger.info("Process cleanup completed")
+
+def validate_video_file(video_path):
+    """Enhanced video validation"""
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+    
+    file_size = os.path.getsize(video_path)
+    if file_size < 10000:  # Less than 10KB
+        raise ValueError(f"Video file too small ({file_size} bytes): {video_path}")
+    
+    # Try to open with OpenCV first for quick validation
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"OpenCV cannot open video file: {video_path}")
+        
+        # Try to read one frame
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            raise ValueError(f"Cannot read frames from video: {video_path}")
+            
+        cap.release()
+        logger.info(f"Video validation passed: {video_path} ({file_size} bytes)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Video validation failed: {e}")
+        raise ValueError(f"Invalid video file: {video_path}")
+
+def get_video_info(video_path):
+    """Get video information with better error handling"""
+    try:
+        # Use OpenCV first for basic info (more reliable)
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError("Cannot open video with OpenCV")
+        
+        cv_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        cv_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cv_fps = cap.get(cv2.CAP_PROP_FPS)
+        cv_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        cap.release()
+        
+        # Use ffprobe for additional info
+        try:
+            probe = ffmpeg.probe(video_path)
+            video_streams = [s for s in probe['streams'] if s['codec_type'] == 'video']
+            
+            if video_streams:
+                stream = video_streams[0]
+                
+                # Use OpenCV values as primary, ffprobe as backup
+                width = cv_width if cv_width > 0 else int(stream.get('width', 0))
+                height = cv_height if cv_height > 0 else int(stream.get('height', 0))
+                
+                # Parse FPS from ffprobe
+                fps_str = stream.get('r_frame_rate', '30/1')
+                if '/' in fps_str:
+                    num, den = fps_str.split('/')
+                    ff_fps = float(num) / float(den) if float(den) != 0 else 30.0
+                else:
+                    ff_fps = float(fps_str)
+                
+                fps = cv_fps if cv_fps > 0 else ff_fps
+                frame_count = cv_frame_count if cv_frame_count > 0 else int(stream.get('nb_frames', 0))
+                
+                # Calculate frame count from duration if needed
+                if frame_count == 0:
+                    try:
+                        duration = float(probe['format'].get('duration', 0))
+                        frame_count = int(duration * fps) if duration > 0 else 0
+                    except:
+                        frame_count = 0
+                
+                return {
+                    'width': width,
+                    'height': height,
+                    'fps': fps,
+                    'frame_count': frame_count,
+                    'duration': frame_count / fps if fps > 0 else 0,
+                    'video_streams': video_streams
+                }
+            
+        except Exception as e:
+            logger.warning(f"FFprobe failed, using OpenCV values: {e}")
+        
+        # Fallback to OpenCV only
+        return {
+            'width': cv_width,
+            'height': cv_height, 
+            'fps': cv_fps if cv_fps > 0 else 30.0,
+            'frame_count': cv_frame_count,
+            'duration': cv_frame_count / cv_fps if cv_fps > 0 else 0,
+            'video_streams': []
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get video info: {e}")
+        raise ValueError(f"Cannot analyze video: {video_path}")
+
 def transform_blueprint_to_video_coordinates(blueprint_polygon, transformation_matrix):
-    """
-    Transform blueprint polygon coordinates to video coordinates using perspective transformation
-    
-    Args:
-        blueprint_polygon: List of [x, y] coordinates in blueprint space
-        transformation_matrix: 3x3 perspective transformation matrix
-    
-    Returns:
-        List of [x, y] coordinates in video space
-    """
+    """Transform blueprint polygon coordinates to video coordinates"""
     try:
         if not blueprint_polygon or len(blueprint_polygon) < 3:
             return None
         
-        # Convert to numpy array and reshape for perspectiveTransform
         pts = np.array(blueprint_polygon, dtype=np.float32).reshape(-1, 1, 2)
-        
-        # Apply perspective transformation
         video_pts = cv2.perspectiveTransform(pts, transformation_matrix)
-        
-        # Convert back to list of [x, y] coordinates
-        video_polygon = [tuple(map(int, pt[0])) for pt in video_pts]
-        
-        return video_polygon
+        return [tuple(map(int, pt[0])) for pt in video_pts]
         
     except Exception as e:
-        logger.error(f"Error transforming blueprint coordinates to video coordinates: {e}")
+        logger.error(f"Error transforming coordinates: {e}")
         return None
 
-def draw_store_polygons(frame, stores, calibration_data=None):
-    """
-    Draw store polygons on the frame
-    
-    Args:
-        frame: OpenCV frame to draw on
-        stores: Dictionary of store configurations with polygon data
-        calibration_data: Calibration data containing transformation matrices
-    
-    Returns:
-        frame: Frame with store polygons drawn
-    """
-    frame_with_stores = frame.copy()
+def precompile_store_data(stores, calibration_data=None):
+    """Pre-compile store polygons for faster rendering"""
+    compiled_stores = {}
     
     for store_id, store in stores.items():
-        # Get polygon data - try different possible keys
         polygon = store.get('video_polygon') or store.get('polygon')
-        
         if not polygon or len(polygon) < 3:
             continue
             
         try:
-            # If we have calibration data and transformation matrices, transform blueprint coordinates
+            # Transform if calibration available
             if calibration_data and 'store_matrices' in calibration_data:
-                store_matrices = calibration_data['store_matrices']
-                if store_id in store_matrices:
-                    # Get the transformation matrix for this store
-                    matrix = np.array(store_matrices[store_id], dtype=np.float32)
-                    
-                    # Transform blueprint coordinates to video coordinates
-                    video_polygon = transform_blueprint_to_video_coordinates(polygon, matrix)
-                    
-                    if video_polygon:
-                        polygon = video_polygon
-                        logger.debug(f"Transformed polygon for store {store_id} using calibration matrix")
-                    else:
-                        logger.warning(f"Failed to transform polygon for store {store_id}")
-                        continue
-                else:
-                    logger.warning(f"No transformation matrix found for store {store_id}")
-                    continue
-            else:
-                # No calibration data, use polygon as-is (assume it's already in video coordinates)
-                logger.debug(f"Using polygon as-is for store {store_id} (no calibration data)")
+                matrices = calibration_data['store_matrices']
+                if store_id in matrices:
+                    matrix = np.array(matrices[store_id], dtype=np.float32)
+                    transformed = transform_blueprint_to_video_coordinates(polygon, matrix)
+                    if transformed:
+                        polygon = transformed
             
-            # Convert polygon points to numpy array for drawing
+            # Convert to numpy array
             if isinstance(polygon[0], (list, tuple)):
-                # Already in correct format [[x1,y1], [x2,y2], ...]
                 pts = np.array(polygon, np.int32).reshape((-1, 1, 2))
             else:
-                # Flat list format [x1,y1,x2,y2,...]
                 pts = np.array(polygon, np.int32).reshape((-1, 1, 2))
             
-            # Draw filled semi-transparent polygon
-            overlay = frame_with_stores.copy()
-            cv2.fillPoly(overlay, [pts], (0, 255, 0))  # Green fill
-            cv2.addWeighted(overlay, 0.3, frame_with_stores, 0.7, 0, frame_with_stores)
-            
-            # Draw polygon outline
-            cv2.polylines(frame_with_stores, [pts], True, (0, 255, 0), 2)
-            
-            # Draw store name at centroid
-            centroid = np.mean(pts, axis=0).astype(int)[0]
-            store_name = store.get('name', store_id)
-            
-            # Draw text background
-            text_size = cv2.getTextSize(store_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-            cv2.rectangle(frame_with_stores, 
-                         (centroid[0] - text_size[0]//2 - 5, centroid[1] - text_size[1] - 5),
-                         (centroid[0] + text_size[0]//2 + 5, centroid[1] + 5),
-                         (0, 0, 0), -1)
-            
-            # Draw store name
-            cv2.putText(frame_with_stores, store_name, 
-                       (centroid[0] - text_size[0]//2, centroid[1]), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            logger.debug(f"Drew polygon for store {store_name} with {len(polygon)} points")
+            compiled_stores[store_id] = {
+                'points': pts,
+                'name': store.get('name', store_id),
+                'centroid': np.mean(pts, axis=0).astype(int)[0]
+            }
             
         except Exception as e:
-            logger.error(f"Error drawing polygon for store {store_id}: {e}")
+            logger.warning(f"Failed to compile store {store_id}: {e}")
             continue
     
-    return frame_with_stores
+    logger.info(f"Compiled {len(compiled_stores)} store polygons")
+    return compiled_stores
 
-def start_process(camera, output_path, track_index=None):
+def draw_annotations_fast(frame, compiled_stores, face_detections, tracked_people, person_tracker):
+    """Optimized annotation drawing"""
+    frame_annotated = frame.copy()
+    
+    # Draw stores with single overlay
+    if compiled_stores:
+        overlay = frame_annotated.copy()
+        for store_data in compiled_stores.values():
+            try:
+                pts = store_data['points']
+                cv2.fillPoly(overlay, [pts], (0, 255, 0))
+                cv2.polylines(overlay, [pts], True, (0, 255, 0), 2)
+                
+                # Store name
+                centroid = store_data['centroid']
+                name = store_data['name']
+                cv2.putText(overlay, name, tuple(centroid), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            except:
+                continue
+        
+        cv2.addWeighted(overlay, 0.3, frame_annotated, 0.7, 0, frame_annotated)
+    
+    # Draw face detections
+    for face in face_detections:
+        bbox = face.get('bbox', [])
+        if len(bbox) >= 4:
+            x, y, w, h = bbox[:4]
+            cv2.rectangle(frame_annotated, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            user_id = face.get('user_id', 'Unknown')
+            cv2.putText(frame_annotated, user_id, (x, y-10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    
+    # Draw person tracking
+    for person_id, person in tracked_people.items():
+        bbox = person.get('bbox', [])
+        if len(bbox) >= 4:
+            x, y, w, h = bbox[:4]
+            cv2.rectangle(frame_annotated, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            
+            display_name = person_tracker.get_person_display_name(person_id)
+            cv2.putText(frame_annotated, display_name, (x, y + h + 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+    
+    return frame_annotated
+
+def start_process(camera, output_path, track_index=None, skip_frames=2, max_resolution=(1920, 1080)):
     """
-    Process video for analytics and movement tracking using ffmpeg-python
+    FIXED and optimized video processing
     
     Args:
-        camera: Camera configuration object from cameras.py
-        output_path: Path to the video file to process
-        track_index: Optional track index to select (e.g., 0 for track1, 1 for track2, etc.)
-    
-    Returns:
-        dict: Processing results and statistics
+        camera: Camera configuration
+        output_path: Input video path  
+        track_index: Video track selection
+        skip_frames: Process every Nth frame (2 = every other frame)
+        max_resolution: Max processing resolution (width, height)
     """
-    process = None
-    output_process = None
+    processor = VideoProcessor()
     
     try:
-        logger.info(f"Starting video processing for camera: {camera}")
-        logger.info(f"Video path: {output_path}")
+        logger.info(f"Starting FIXED video processing")
+        logger.info(f"Video: {output_path}")
+        logger.info(f"Skip frames: {skip_frames}, Max resolution: {max_resolution}")
         
-        # Validate input parameters first
-        if not camera:
-            raise ValueError("Camera configuration is required")
+        # Enhanced validation
+        validate_video_file(output_path)
+        video_info = get_video_info(output_path)
         
-        if not output_path:
-            raise ValueError("Output path is required")
+        width = video_info['width']
+        height = video_info['height']
+        fps = video_info['fps']
+        total_frames = video_info['frame_count']
         
-        # Use output_path as the video path (since that's what we're processing)
-        video_path = output_path
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Video file not found: {video_path}")
+        if width <= 0 or height <= 0 or fps <= 0:
+            raise ValueError(f"Invalid video parameters: {width}x{height}@{fps}fps")
         
-        # Check if file is readable
-        if not os.access(video_path, os.R_OK):
-            raise PermissionError(f"Cannot read video file: {video_path}")
+        logger.info(f"Video info: {width}x{height}@{fps:.2f}fps, {total_frames} frames")
         
-        file_size = os.path.getsize(video_path)
-        logger.info(f"Video file size: {file_size} bytes")
+        # Calculate processing resolution
+        max_w, max_h = max_resolution
+        scale_factor = 1.0
+        process_width, process_height = width, height
         
-        if file_size == 0:
-            raise ValueError(f"Video file is empty: {video_path}")
+        if width > max_w or height > max_h:
+            scale_w = max_w / width
+            scale_h = max_h / height
+            scale_factor = min(scale_w, scale_h)
+            process_width = int(width * scale_factor)
+            process_height = int(height * scale_factor)
+            # Ensure even dimensions for H.264
+            process_width = (process_width // 2) * 2
+            process_height = (process_height // 2) * 2
+            logger.info(f"Scaling: {width}x{height} -> {process_width}x{process_height}")
         
-        # Check for suspiciously small files (likely corrupted)
-        if file_size < 10000:  # Less than 10KB
-            logger.warning(f"Video file is very small ({file_size} bytes) - may be corrupted: {video_path}")
-            raise ValueError(f"Video file appears to be corrupted or too small ({file_size} bytes): {video_path}")
+        # Effective FPS after frame skipping
+        output_fps = max(1.0, fps / skip_frames)
         
-        logger.info(f"Video file validation passed: {file_size} bytes")
-        
-        # Initialize services with better error handling
+        # Initialize services
+        aws_service = None
         try:
             aws_service = AWSRekognitionService()
-        except Exception as e:
-            logger.warning(f"Failed to initialize AWS service: {e}")
-            aws_service = None
+            success, _ = aws_service.enable_aws_rekognition()
+            if success:
+                aws_service.set_export_mode(True)
+                logger.info("AWS enabled")
+        except:
+            logger.warning("AWS initialization failed")
         
-        try:
-            person_tracker = PersonTracker(camera_id=str(camera.get('id', 'unknown')))
-        except Exception as e:
-            logger.error(f"Failed to initialize person tracker: {e}")
-            raise
+        person_tracker = PersonTracker(camera_id=str(camera.get('id', 'unknown')))
+        movement_logger = MovementLogger()
         
-        try:
-            movement_logger = MovementLogger()
-        except Exception as e:
-            logger.error(f"Failed to initialize movement logger: {e}")
-            raise
+        # Get store data
+        camera_id = str(camera.get('id', 'unknown'))
+        blueprint_mapping = get_blueprint_mapping_by_camera_id(camera_id)
         
-        # Setup AWS if available
-        aws_enabled = False
-        if aws_service:
-            try:
-                success, message = aws_service.enable_aws_rekognition()
-                if success:
-                    aws_service.set_export_mode(True)
-                    aws_enabled = True
-                    logger.info("AWS Rekognition enabled successfully")
-                else:
-                    logger.warning(f"AWS Rekognition not enabled: {message}")
-            except Exception as e:
-                logger.warning(f"Error enabling AWS: {e}")
-        
-        # Probe video with better error handling
-        logger.info("Probing video file...")
-        try:
-            probe = ffmpeg.probe(video_path)
-            logger.info("Video probe successful")
-        except ffmpeg.Error as e:
-            logger.error(f"FFmpeg probe failed: {e}")
-            logger.error(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'No stderr'}")
-            raise ValueError(f"Could not probe video file: {video_path}")
-        except Exception as e:
-            logger.error(f"Unexpected error during video probe: {e}")
-            raise
-        
-        # Extract video stream information
-        video_streams = [stream for stream in probe['streams'] if stream['codec_type'] == 'video']
-        
-        if not video_streams:
-            raise ValueError("No video streams found in the file")
-        
-        logger.info(f"Found {len(video_streams)} video stream(s)")
-        
-        # Select video stream
-        if track_index is not None:
-            if track_index >= len(video_streams):
-                raise ValueError(f"Track index {track_index} not found. Available tracks: 0-{len(video_streams)-1}")
-            selected_stream = video_streams[track_index]
-            logger.info(f"Selected video track {track_index} (stream index {selected_stream['index']})")
+        if blueprint_mapping:
+            stores = blueprint_mapping.get('stores', {})
+            calibration_data = blueprint_mapping.get('calibration', {})
         else:
-            selected_stream = video_streams[0]
-            logger.info(f"Using default video track (stream index {selected_stream['index']})")
+            stores = camera.get('stores', {})
+            calibration_data = None
         
-        # Get video properties from selected stream
-        try:
-            width = int(selected_stream['width'])
-            height = int(selected_stream['height'])
-        except (KeyError, ValueError) as e:
-            logger.error(f"Could not get video dimensions: {e}")
-            raise ValueError("Invalid video dimensions")
+        compiled_stores = precompile_store_data(stores, calibration_data)
         
-        # Get FPS with better error handling
+        # Setup input process with OpenCV fallback
+        logger.info("Setting up input stream...")
+        
+        # Try FFmpeg first
+        use_opencv = False
         try:
-            fps_str = selected_stream.get('r_frame_rate', '30/1')
-            if '/' in fps_str:
-                fps_parts = fps_str.split('/')
-                fps = float(fps_parts[0]) / float(fps_parts[1])
+            input_stream = ffmpeg.input(output_path, loglevel='error')
+            
+            if scale_factor != 1.0:
+                video_stream = input_stream.video.filter('scale', process_width, process_height)
             else:
-                fps = float(fps_str)
+                video_stream = input_stream.video
             
-            if fps <= 0 or fps > 1000:  # Sanity check
-                logger.warning(f"Invalid FPS value: {fps}, using default 30")
-                fps = 30.0
-        except (ValueError, ZeroDivisionError) as e:
-            logger.warning(f"Could not parse FPS, using default: {e}")
-            fps = 30.0
-        
-        # Get total frames
-        total_frames = int(selected_stream.get('nb_frames', 0))
-        if total_frames == 0:
-            try:
-                duration = float(probe['format'].get('duration', 0))
-                total_frames = int(duration * fps) if duration > 0 else 0
-            except (ValueError, TypeError):
-                total_frames = 0
-        
-        logger.info(f"Video properties: {width}x{height} @ {fps:.2f}fps")
-        if total_frames > 0:
-            logger.info(f"Estimated total frames: {total_frames}")
-        else:
-            logger.warning("Could not determine total frame count")
-        
-        # Setup FFmpeg input process with better error handling
-        logger.info("Setting up FFmpeg input process...")
-        try:
-            # Build FFmpeg input command
-            input_args = {'loglevel': 'error'}  # Reduce FFmpeg log noise
-            
-            # Always use the default input - track selection will be handled by stream index
-            input_stream = ffmpeg.input(video_path, **input_args)
-            logger.info(f"Using input stream for track {track_index if track_index is not None else 'default'}")
-            
-            # Setup output to pipe
-            output_stream = input_stream.video.output(
+            output_stream = video_stream.output(
                 'pipe:', 
                 format='rawvideo', 
                 pix_fmt='bgr24',
                 loglevel='error'
             )
             
-            # Start the process
-            process = output_stream.run_async(pipe_stdout=True, pipe_stderr=True)
+            processor.input_process = output_stream.run_async(pipe_stdout=True, pipe_stderr=True)
             
-            # Check if process started successfully
-            time.sleep(0.1)  # Give process time to start
-            if process.poll() is not None:
-                # Process failed to start
-                stderr_output = ""
-                if process.stderr:
-                    try:
-                        stderr_output = process.stderr.read().decode()
-                    except:
-                        stderr_output = "Could not read stderr"
+            # Test if process started
+            time.sleep(0.2)
+            if processor.input_process.poll() is not None:
+                logger.warning("FFmpeg input failed, falling back to OpenCV")
+                use_opencv = True
+                processor.input_process = None
                 
-                logger.error(f"FFmpeg input process failed to start. Return code: {process.poll()}")
-                logger.error(f"FFmpeg stderr: {stderr_output}")
-                raise RuntimeError(f"FFmpeg input process failed: {stderr_output}")
-            
-            logger.info("FFmpeg input process started successfully")
-            
         except Exception as e:
-            logger.error(f"Error setting up FFmpeg input process: {e}")
-            if process:
-                try:
-                    process.terminate()
-                except:
-                    pass
-            raise
+            logger.warning(f"FFmpeg setup failed: {e}, using OpenCV")
+            use_opencv = True
         
-        # Setup output video path
-        processed_output_path = output_path.replace('.mp4', '_processed.mp4')
+        # OpenCV fallback
+        if use_opencv:
+            cap = cv2.VideoCapture(output_path)
+            if not cap.isOpened():
+                raise ValueError("Cannot open video with OpenCV")
+            logger.info("Using OpenCV for input")
         
+        # Setup output
+        processed_output_path = output_path.replace('.mp4', '_processed.mp4').replace('.mkv', '_processed.mp4')
         output_dir = os.path.dirname(processed_output_path)
         if output_dir and not os.path.exists(output_dir):
-            try:
-                os.makedirs(output_dir, exist_ok=True)
-                logger.info(f"Created output directory: {output_dir}")
-            except Exception as e:
-                logger.error(f"Failed to create output directory: {e}")
-                raise
+            os.makedirs(output_dir, exist_ok=True)
         
-        # Setup FFmpeg output process
-        logger.info("Setting up FFmpeg output process...")
+        # Ensure even dimensions for H.264
+        out_width = (width // 2) * 2
+        out_height = (height // 2) * 2
+        
+        logger.info("Setting up output stream...")
         try:
-            output_process = (
+            processor.output_process = (
                 ffmpeg
-                .input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=fps)
+                .input('pipe:', format='rawvideo', pix_fmt='bgr24', 
+                      s=f'{out_width}x{out_height}', r=output_fps)
                 .output(
-                    processed_output_path, 
-                    vcodec='libx264', 
-                    pix_fmt='yuv420p', 
-                    r=fps,
-                    loglevel='error'
+                    processed_output_path,
+                    vcodec='libx264',
+                    pix_fmt='yuv420p',
+                    r=output_fps,
+                    preset='ultrafast',  # Fastest encoding
+                    crf=28,             # Lower quality for speed
+                    tune='fastdecode',  # Optimize for speed
+                    bf=0,               # No B-frames
+                    refs=1,             # Single reference frame
+                    loglevel='error',
+                    movflags='faststart'  # Web optimization
                 )
                 .overwrite_output()
                 .run_async(pipe_stdin=True, pipe_stderr=True)
             )
             
-            # Check if output process started
             time.sleep(0.1)
-            if output_process.poll() is not None:
-                stderr_output = ""
-                if output_process.stderr:
-                    try:
-                        stderr_output = output_process.stderr.read().decode()
-                    except:
-                        stderr_output = "Could not read stderr"
+            if processor.output_process.poll() is not None:
+                raise RuntimeError("Output process failed to start")
                 
-                logger.error(f"FFmpeg output process failed to start. Return code: {output_process.poll()}")
-                logger.error(f"FFmpeg stderr: {stderr_output}")
-                raise RuntimeError(f"FFmpeg output process failed: {stderr_output}")
-            
-            logger.info(f"FFmpeg output process started successfully. Output: {processed_output_path}")
-            
         except Exception as e:
-            logger.error(f"Error setting up FFmpeg output process: {e}")
-            if output_process:
-                try:
-                    output_process.terminate()
-                except:
-                    pass
+            logger.error(f"Output setup failed: {e}")
             raise
         
-        # Get blueprint mapping data
-        camera_id = str(camera.get('id', 'unknown'))
-        logger.info(f"Loading blueprint data for camera: {camera_id}")
-        
-        blueprint_mapping = get_blueprint_mapping_by_camera_id(camera_id)
-        
-        if blueprint_mapping:
-            logger.info(f"Using blueprint mapping for camera {camera_id}")
-            stores = blueprint_mapping.get('stores', {})
-            calibration_data = blueprint_mapping.get('calibration', {})
-            logger.info(f"Found {len(stores)} stores in blueprint mapping")
-            if calibration_data and 'store_matrices' in calibration_data:
-                logger.info(f"Found calibration data with {len(calibration_data['store_matrices'])} transformation matrices")
-            else:
-                logger.warning("No calibration data found in blueprint mapping")
-        else:
-            logger.warning(f"No blueprint mapping found for camera {camera_id}, using camera config stores")
-            stores = camera.get('stores', {})
-            calibration_data = None
-        
-        # Initialize processing variables
+        # Main processing loop
         frame_count = 0
-        aws_frame_skip = 60  # Process AWS every 60th frame
-        processing_start_time = time.time()
-        store_entry_logged = {}  # Track store entries
+        processed_count = 0
+        processing_start = time.time()
+        last_log_time = time.time()
+        aws_skip = 300  # Very infrequent AWS calls
+        frame_size = process_width * process_height * 3
         
-        # Performance tracking
-        timings = {
-            'aws_detection': 0.0,
-            'yolo_detection': 0.0,
-            'tracking_update': 0.0,
-            'movement_logging': 0.0,
-            'frame_processing': 0.0
-        }
+        processor.processing_active = True
+        consecutive_failures = 0
+        max_failures = 10
         
-        tracked_people = {}
-        frame_size = width * height * 3  # BGR format
+        logger.info("Starting main processing loop...")
         
-        logger.info(f"Starting frame processing. Frame size: {frame_size} bytes")
-        logger.info(f"AWS enabled: {aws_enabled}, Frame skip: {aws_frame_skip}")
-        
-        # Process frames
-        consecutive_read_failures = 0
-        max_read_failures = 10
-        
-        logger.info("Starting frame reading loop...")
-        
-        while True:
-            frame_start_time = time.time()
-            
+        while processor.processing_active and consecutive_failures < max_failures:
             try:
-                # Read frame data from FFmpeg
-                logger.debug(f"Attempting to read frame {frame_count + 1}")
-                in_bytes = process.stdout.read(frame_size)
+                frame = None
                 
-                if not in_bytes:
-                    logger.info("No more data from FFmpeg (EOF)")
-                    # Check if process is still running
-                    if process.poll() is not None:
-                        logger.info(f"FFmpeg process ended with return code: {process.poll()}")
-                        # Read any stderr output
-                        if process.stderr:
-                            stderr_output = process.stderr.read().decode()
-                            if stderr_output:
-                                logger.error(f"FFmpeg stderr: {stderr_output}")
-                    break
-                
-                if len(in_bytes) < frame_size:
-                    consecutive_read_failures += 1
-                    logger.warning(f"Incomplete frame read: got {len(in_bytes)} bytes, expected {frame_size}. Failure count: {consecutive_read_failures}")
-                    
-                    if consecutive_read_failures >= max_read_failures:
-                        logger.error(f"Too many consecutive read failures ({consecutive_read_failures}). Stopping processing.")
+                # Read frame
+                if use_opencv:
+                    ret, frame = cap.read()
+                    if not ret:
                         break
-                    continue
-                
-                # Reset failure counter on successful read
-                consecutive_read_failures = 0
-                
-                # Convert bytes to numpy array
-                try:
-                    frame = np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3])
-                except ValueError as e:
-                    logger.error(f"Failed to reshape frame data: {e}")
-                    continue
-                
-                current_time = frame_count / fps
-                face_detections = []
-                
-                # AWS face detection (every N frames)
-                if aws_enabled and aws_service and frame_count % aws_frame_skip == 0:
-                    try:
-                        t_aws_start = time.time()
-                        face_detections = aws_service.detect_faces(frame, current_time)
-                        timings['aws_detection'] += time.time() - t_aws_start
+                    
+                    if scale_factor != 1.0:
+                        frame = cv2.resize(frame, (process_width, process_height))
                         
-                        if face_detections:
-                            logger.info(f"Frame {frame_count}: Found {len(face_detections)} registered faces")
-                    except Exception as e:
-                        logger.warning(f"AWS face detection failed on frame {frame_count}: {e}")
-                        face_detections = []
+                else:
+                    # FFmpeg input
+                    in_bytes = processor.input_process.stdout.read(frame_size)
+                    if not in_bytes or len(in_bytes) < frame_size:
+                        if processor.input_process.poll() is not None:
+                            break
+                        consecutive_failures += 1
+                        continue
+                    
+                    frame = np.frombuffer(in_bytes, np.uint8).reshape([process_height, process_width, 3])
                 
-                # YOLO person detection
+                frame_count += 1
+                consecutive_failures = 0
+                
+                # Frame skipping
+                if frame_count % skip_frames != 0:
+                    continue
+                
+                processed_count += 1
+                
+                # Scale back up if needed
+                if scale_factor != 1.0:
+                    frame = cv2.resize(frame, (out_width, out_height))
+                elif frame.shape[:2] != (out_height, out_width):
+                    frame = cv2.resize(frame, (out_width, out_height))
+                
+                # AI processing (very limited)
+                face_detections = []
+                if aws_service and processed_count % aws_skip == 0:
+                    try:
+                        current_time = frame_count / fps
+                        face_detections = aws_service.detect_faces(frame, current_time)
+                    except:
+                        pass
+                
+                # Person detection
+                detections = {'persons': []}
                 try:
-                    t_yolo_start = time.time()
                     detections = person_tracker.analyze_frame(frame)
-                    timings['yolo_detection'] += time.time() - t_yolo_start
-                except Exception as e:
-                    logger.warning(f"YOLO detection failed on frame {frame_count}: {e}")
-                    detections = {'persons': []}
+                except:
+                    pass
                 
-                # Update tracking
+                # Tracking update
+                tracked_people = {}
                 try:
-                    t_update_start = time.time()
                     tracked_people = person_tracker.update(
                         detections.get('persons', []), stores, frame_count, face_detections, frame
                     )
-                    timings['tracking_update'] += time.time() - t_update_start
-                except Exception as e:
-                    logger.warning(f"Tracking update failed on frame {frame_count}: {e}")
-                    tracked_people = {}
+                except:
+                    pass
                 
                 # Draw annotations
-                try:
-                    frame_with_annotations = frame.copy()
-                    
-                    # Draw store polygons first
-                    frame_with_annotations = draw_store_polygons(frame_with_annotations, stores, calibration_data)
-                    
-                    # Draw face detections
-                    for face in face_detections:
-                        bbox = face.get('bbox', [0, 0, 0, 0])
-                        if len(bbox) >= 4:
-                            x, y, w, h = bbox[:4]
-                            confidence = face.get('confidence', 0)
-                            user_id = face.get('user_id', 'Unknown')
-                            
-                            # Draw face bounding box (red)
-                            cv2.rectangle(frame_with_annotations, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                            
-                            # Draw label
-                            label = f"{user_id} ({confidence:.1f}%)"
-                            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                            cv2.rectangle(frame_with_annotations, (x, y - label_size[1] - 10), 
-                                         (x + label_size[0], y), (0, 0, 255), -1)
-                            cv2.putText(frame_with_annotations, label, (x, y - 5), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                    
-                    # Draw person tracking
-                    for person_id, person in tracked_people.items():
-                        try:
-                            bbox = person.get('bbox', [0, 0, 0, 0])
-                            if len(bbox) >= 4:
-                                x, y, w, h = bbox[:4]
-                                location = (bbox[0] + bbox[2]/2, bbox[1] + bbox[3]/2)
-                                
-                                # Get person identity
-                                user_id, face_id = person_tracker.get_person_identity(person_id)
-                                activity_type = 'walking' if person.get('is_moving', False) else 'standing'
-                                
-                                # Check store entry
-                                current_store = person.get('current_store')
-                                if current_store and current_store in stores:
-                                    current_timestamp = datetime.now()
-                                    should_log_entry = (
-                                        person_id not in store_entry_logged or 
-                                        current_store not in store_entry_logged[person_id] or
-                                        (current_timestamp - store_entry_logged[person_id][current_store]).seconds > 5
-                                    )
-                                    
-                                    if should_log_entry:
-                                        store_name = stores[current_store].get('name', current_store)
-                                        logger.info(f"Person {person_id} entered store: {store_name}")
-                                        
-                                        if person_id not in store_entry_logged:
-                                            store_entry_logged[person_id] = {}
-                                        store_entry_logged[person_id][current_store] = current_timestamp
-                                        
-                                        # Log movement for registered persons
-                                        if user_id:
-                                            try:
-                                                movement_logger.log_person_movement(
-                                                    person_id=user_id,
-                                                    location=location,
-                                                    timestamp=current_timestamp,
-                                                    camera_id=camera_id,
-                                                    confidence=person.get('confidence', 1.0),
-                                                    store_id=current_store,
-                                                    activity_type='store_entered',
-                                                    bbox=bbox,
-                                                    face_id=face_id
-                                                )
-                                            except Exception as e:
-                                                logger.warning(f"Failed to log store entry: {e}")
-                                
-                                # Draw person bounding box (blue)
-                                cv2.rectangle(frame_with_annotations, (x, y), (x + w, y + h), (255, 0, 0), 2)
-                                
-                                # Draw person label
-                                display_name = person_tracker.get_person_display_name(person_id)
-                                person_label = f"{display_name} ({activity_type})"
-                                if current_store and current_store in stores:
-                                    store_name = stores[current_store].get('name', current_store)
-                                    person_label += f" in {store_name}"
-                                
-                                label_size = cv2.getTextSize(person_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                                cv2.rectangle(frame_with_annotations, (x, y + h), 
-                                             (x + label_size[0], y + h + label_size[1] + 10), (255, 0, 0), -1)
-                                cv2.putText(frame_with_annotations, person_label, (x, y + h + label_size[1] + 5), 
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                                
-                                # Log general movement
-                                if user_id:
-                                    try:
-                                        movement_logger.log_person_movement(
-                                            person_id=user_id,
-                                            location=location,
-                                            timestamp=datetime.now(),
-                                            camera_id=camera_id,
-                                            confidence=person.get('confidence', 1.0),
-                                            store_id=current_store,
-                                            activity_type=activity_type,
-                                            bbox=bbox,
-                                            face_id=face_id
-                                        )
-                                    except Exception as e:
-                                        logger.debug(f"Failed to log movement: {e}")
-                        
-                        except Exception as e:
-                            logger.warning(f"Error processing person {person_id}: {e}")
-                            continue
+                frame_annotated = draw_annotations_fast(
+                    frame, compiled_stores, face_detections, tracked_people, person_tracker
+                )
                 
-                except Exception as e:
-                    logger.warning(f"Error drawing annotations on frame {frame_count}: {e}")
-                    frame_with_annotations = frame  # Use original frame
-                
-                # Write frame to output
+                # Write output
                 try:
-                    output_process.stdin.write(frame_with_annotations.tobytes())
+                    processor.output_process.stdin.write(frame_annotated.tobytes())
+                    processor.output_process.stdin.flush()
                 except Exception as e:
-                    logger.error(f"Failed to write frame {frame_count} to output: {e}")
+                    logger.error(f"Output write failed: {e}")
                     break
                 
-                # Update counters and timing
-                frame_count += 1
-                timings['frame_processing'] += time.time() - frame_start_time
-                
                 # Progress logging
-                if frame_count % 100 == 0:
-                    elapsed_time = time.time() - processing_start_time
-                    fps_current = frame_count / elapsed_time if elapsed_time > 0 else 0
+                current_time = time.time()
+                if current_time - last_log_time > 10:
+                    elapsed = current_time - processing_start
+                    fps_current = processed_count / elapsed
                     
                     if total_frames > 0:
                         progress = (frame_count / total_frames) * 100
-                        eta_seconds = (total_frames - frame_count) / fps_current if fps_current > 0 else 0
-                        eta_min = int(eta_seconds // 60)
-                        eta_sec = int(eta_seconds % 60)
-                        logger.info(f"Progress: {progress:.1f}% ({frame_count}/{total_frames}) - "
-                                  f"Speed: {fps_current:.1f} fps - ETA: {eta_min:02d}:{eta_sec:02d}")
+                        logger.info(f"Progress: {progress:.1f}% - Speed: {fps_current:.1f} fps")
                     else:
-                        logger.info(f"Processed {frame_count} frames - Speed: {fps_current:.1f} fps")
+                        logger.info(f"Processed: {processed_count} frames - Speed: {fps_current:.1f} fps")
+                    
+                    last_log_time = current_time
                 
             except Exception as e:
-                logger.error(f"Error processing frame {frame_count}: {e}")
-                consecutive_read_failures += 1
-                if consecutive_read_failures >= max_read_failures:
-                    logger.error(f"Too many processing errors. Stopping.")
-                    break
+                logger.error(f"Processing error: {e}")
+                consecutive_failures += 1
                 continue
         
-        logger.info(f"Frame processing completed. Total frames processed: {frame_count}")
+        # Cleanup input
+        if use_opencv:
+            cap.release()
+        
+        logger.info(f"Processing completed: {processed_count} frames processed")
         
     except Exception as e:
-        logger.error(f"Critical error in video processing: {e}")
+        logger.error(f"Critical error: {e}")
         raise
-        
     finally:
-        # Cleanup processes
-        logger.info("Cleaning up FFmpeg processes...")
-        
-        if process:
-            try:
-                if process.stdout:
-                    process.stdout.close()
-                process.terminate()
-                process.wait(timeout=5)
-                logger.info("Input process cleaned up")
-            except Exception as e:
-                logger.warning(f"Error cleaning up input process: {e}")
-                try:
-                    process.kill()
-                except:
-                    pass
-        
-        if output_process:
-            try:
-                if output_process.stdin:
-                    output_process.stdin.close()
-                output_process.terminate()
-                output_process.wait(timeout=5)
-                logger.info("Output process cleaned up")
-            except Exception as e:
-                logger.warning(f"Error cleaning up output process: {e}")
-                try:
-                    output_process.kill()
-                except:
-                    pass
+        processor.cleanup_processes()
     
-    # Calculate final results
-    processing_time = time.time() - processing_start_time
-    aws_calls = aws_service.api_calls_count if aws_service else 0
-    
+    # Results
+    processing_time = time.time() - processing_start
     results = {
-        'total_frames': total_frames if total_frames > 0 else frame_count,
-        'processed_frames': frame_count,
+        'total_frames_read': frame_count,
+        'frames_processed': processed_count,
         'processing_time': processing_time,
-        'processing_speed': frame_count / processing_time if processing_time > 0 else 0,
-        'aws_api_calls': aws_calls,
-        'tracked_persons': len(tracked_people),
-        'input_video_path': video_path,
+        'processing_speed': processed_count / processing_time if processing_time > 0 else 0,
         'processed_video_path': processed_output_path,
-        'performance_timings': timings,
-        'aws_frame_skip': aws_frame_skip,
-        'camera_id': camera_id,
-        'blueprint_used': bool(blueprint_mapping),
-        'stores_processed': len(stores),
-        'store_entries_logged': len(store_entry_logged),
-        'calibration_available': bool(calibration_data and 'store_matrices' in calibration_data),
-        'selected_track_index': track_index,
-        'available_video_tracks': len(video_streams) if 'video_streams' in locals() else 0
+        'input_method': 'opencv' if use_opencv else 'ffmpeg',
+        'optimizations_applied': True,
+        'scale_factor': scale_factor,
+        'output_fps': output_fps
     }
     
-    logger.info(f"Video processing completed successfully: {results}")
+    logger.info(f"Results: {results}")
     return results
