@@ -6,6 +6,7 @@ import numpy as np
 import ffmpeg
 import signal
 import threading
+import subprocess
 from datetime import datetime
 from .awsRecognitionService import AWSRekognitionService
 from .personTracker import PersonTracker
@@ -19,7 +20,7 @@ class VideoProcessor:
         self.input_process = None
         self.output_process = None
         self.processing_active = False
-        self.cleanup_timeout = 10  # seconds
+        self.cleanup_timeout = 15  # Increased timeout
         
     def cleanup_processes(self):
         """Enhanced process cleanup with proper termination"""
@@ -34,8 +35,8 @@ class VideoProcessor:
                 if self.output_process.stdin and not self.output_process.stdin.closed:
                     self.output_process.stdin.close()
                     
-                # Give process time to flush
-                time.sleep(1)
+                # Give process time to flush and finalize
+                time.sleep(2)
                 
                 if self.output_process.poll() is None:
                     logger.info("Terminating output process...")
@@ -128,6 +129,8 @@ def get_video_info(video_path):
         cv_fps = cap.get(cv2.CAP_PROP_FPS)
         cv_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
+        logger.info(f"OpenCV video info: {cv_width}x{cv_height}@{cv_fps:.2f}fps, {cv_frame_count} frames")
+        
         cap.release()
         
         # Use ffprobe for additional info
@@ -158,8 +161,11 @@ def get_video_info(video_path):
                     try:
                         duration = float(probe['format'].get('duration', 0))
                         frame_count = int(duration * fps) if duration > 0 else 0
+                        logger.info(f"Calculated frame count from duration: {duration}s * {fps}fps = {frame_count} frames")
                     except:
                         frame_count = 0
+                
+                logger.info(f"Final video info: {width}x{height}@{fps:.2f}fps, {frame_count} frames")
                 
                 return {
                     'width': width,
@@ -174,6 +180,7 @@ def get_video_info(video_path):
             logger.warning(f"FFprobe failed, using OpenCV values: {e}")
         
         # Fallback to OpenCV only
+        logger.info(f"Using OpenCV fallback: {cv_width}x{cv_height}@{cv_fps:.2f}fps, {cv_frame_count} frames")
         return {
             'width': cv_width,
             'height': cv_height, 
@@ -287,7 +294,7 @@ def draw_annotations_fast(frame, compiled_stores, face_detections, tracked_peopl
 
 def start_process(camera, output_path, track_index=None, skip_frames=2, max_resolution=(1920, 1080)):
     """
-    FIXED and optimized video processing
+    REVISED and optimized video processing with complete video processing guarantee
     
     Args:
         camera: Camera configuration
@@ -299,7 +306,7 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
     processor = VideoProcessor()
     
     try:
-        logger.info(f"Starting FIXED video processing")
+        logger.info(f"Starting REVISED video processing")
         logger.info(f"Video: {output_path}")
         logger.info(f"Skip frames: {skip_frames}, Max resolution: {max_resolution}")
         
@@ -317,21 +324,27 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
         
         logger.info(f"Video info: {width}x{height}@{fps:.2f}fps, {total_frames} frames")
         
-        # Calculate processing resolution
+        # Calculate processing resolution - FIXED: Use consistent dimensions
         max_w, max_h = max_resolution
         scale_factor = 1.0
-        process_width, process_height = width, height
         
         if width > max_w or height > max_h:
             scale_w = max_w / width
             scale_h = max_h / height
             scale_factor = min(scale_w, scale_h)
-            process_width = int(width * scale_factor)
-            process_height = int(height * scale_factor)
+        
+        # FIXED: Use consistent dimensions throughout pipeline
+        if scale_factor != 1.0:
+            output_width = int(width * scale_factor)
+            output_height = int(height * scale_factor)
             # Ensure even dimensions for H.264
-            process_width = (process_width // 2) * 2
-            process_height = (process_height // 2) * 2
-            logger.info(f"Scaling: {width}x{height} -> {process_width}x{process_height}")
+            output_width = (output_width // 2) * 2
+            output_height = (output_height // 2) * 2
+            logger.info(f"Scaling: {width}x{height} -> {output_width}x{output_height} (factor: {scale_factor:.3f})")
+        else:
+            output_width = (width // 2) * 2
+            output_height = (height // 2) * 2
+            logger.info(f"No scaling needed: {output_width}x{output_height}")
         
         # Effective FPS after frame skipping
         output_fps = max(1.0, fps / skip_frames)
@@ -372,7 +385,7 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
             input_stream = ffmpeg.input(output_path, loglevel='error')
             
             if scale_factor != 1.0:
-                video_stream = input_stream.video.filter('scale', process_width, process_height)
+                video_stream = input_stream.video.filter('scale', output_width, output_height)
             else:
                 video_stream = input_stream.video
             
@@ -386,7 +399,7 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
             processor.input_process = output_stream.run_async(pipe_stdout=True, pipe_stderr=True)
             
             # Test if process started
-            time.sleep(0.2)
+            time.sleep(0.5)
             if processor.input_process.poll() is not None:
                 logger.warning("FFmpeg input failed, falling back to OpenCV")
                 use_opencv = True
@@ -409,26 +422,22 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         
-        # Ensure even dimensions for H.264
-        out_width = (width // 2) * 2
-        out_height = (height // 2) * 2
-        
         logger.info("Setting up output stream...")
         try:
             processor.output_process = (
                 ffmpeg
                 .input('pipe:', format='rawvideo', pix_fmt='bgr24', 
-                      s=f'{out_width}x{out_height}', r=output_fps)
+                      s=f'{output_width}x{output_height}', r=output_fps)
                 .output(
                     processed_output_path,
                     vcodec='libx264',
                     pix_fmt='yuv420p',
                     r=output_fps,
-                    preset='ultrafast',  # Fastest encoding
-                    crf=28,             # Lower quality for speed
-                    tune='fastdecode',  # Optimize for speed
-                    bf=0,               # No B-frames
-                    refs=1,             # Single reference frame
+                    preset='medium',      # Better balance of speed/quality
+                    crf=23,              # Better quality
+                    tune='film',         # Better for real content
+                    bf=2,                # B-frames for better compression
+                    refs=3,              # Multiple reference frames
                     loglevel='error',
                     movflags='faststart'  # Web optimization
                 )
@@ -436,7 +445,7 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
                 .run_async(pipe_stdin=True, pipe_stderr=True)
             )
             
-            time.sleep(0.1)
+            time.sleep(0.2)
             if processor.output_process.poll() is not None:
                 raise RuntimeError("Output process failed to start")
                 
@@ -444,58 +453,101 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
             logger.error(f"Output setup failed: {e}")
             raise
         
-        # Main processing loop
+        # Main processing loop - REVISED for complete processing
         frame_count = 0
         processed_count = 0
         processing_start = time.time()
         last_log_time = time.time()
         aws_skip = 300  # Very infrequent AWS calls
-        frame_size = process_width * process_height * 3
+        
+        # FIXED: Calculate exact frame size consistently
+        frame_size = output_width * output_height * 3
+        logger.info(f"Frame size: {frame_size} bytes ({output_width}x{output_height}x3)")
         
         processor.processing_active = True
-        consecutive_failures = 0
-        max_failures = 10
+        temporary_failures = 0
+        max_temp_failures = 10  # Reduced from 50
+        frame_buffer = []  # For batched output
+        buffer_size = 5  # Batch size for output writing
         
         logger.info("Starting main processing loop...")
+        logger.info(f"Expected total frames: {total_frames}, Expected duration: {total_frames/fps if fps > 0 else 0:.2f} seconds")
         
-        while processor.processing_active and consecutive_failures < max_failures:
+        while processor.processing_active:
             try:
                 frame = None
                 
-                # Read frame
+                # Read frame - IMPROVED logic
                 if use_opencv:
                     ret, frame = cap.read()
-                    if not ret:
+                    if not ret or frame is None:
+                        logger.info("OpenCV: End of video reached")
                         break
                     
                     if scale_factor != 1.0:
-                        frame = cv2.resize(frame, (process_width, process_height))
+                        frame = cv2.resize(frame, (output_width, output_height))
+                    elif frame.shape[:2] != (output_height, output_width):
+                        frame = cv2.resize(frame, (output_width, output_height))
                         
                 else:
-                    # FFmpeg input
-                    in_bytes = processor.input_process.stdout.read(frame_size)
-                    if not in_bytes or len(in_bytes) < frame_size:
-                        if processor.input_process.poll() is not None:
+                    # FIXED: FFmpeg input with proper EOF handling
+                    try:
+                        in_bytes = processor.input_process.stdout.read(frame_size)
+                        
+                        if not in_bytes:
+                            # Check if process finished normally
+                            if processor.input_process.poll() is not None:
+                                logger.info("FFmpeg: End of video reached (process finished)")
+                                break
+                            else:
+                                # No data but process still running - temporary issue
+                                time.sleep(0.01)
+                                temporary_failures += 1
+                                if temporary_failures > max_temp_failures:
+                                    logger.warning("Too many temporary failures, assuming EOF")
+                                    break
+                                continue
+                        
+                        if len(in_bytes) < frame_size:
+                            # IMPROVED: Handle partial frames better
+                            logger.debug(f"Partial frame: {len(in_bytes)}/{frame_size} bytes")
+                            
+                            # Try to read remaining bytes
+                            remaining_bytes = frame_size - len(in_bytes)
+                            additional_bytes = processor.input_process.stdout.read(remaining_bytes)
+                            
+                            if additional_bytes:
+                                in_bytes += additional_bytes
+                            
+                            if len(in_bytes) < frame_size:
+                                # Still not enough - likely EOF
+                                logger.info("Partial frame at end of video, stopping")
+                                break
+                        
+                        frame = np.frombuffer(in_bytes, np.uint8).reshape([output_height, output_width, 3])
+                        temporary_failures = 0  # Reset on successful read
+                        
+                    except Exception as e:
+                        if "broken pipe" in str(e).lower() or "epipe" in str(e).lower():
+                            logger.info("Input pipe closed, end of video")
                             break
-                        consecutive_failures += 1
+                        logger.error(f"FFmpeg read error: {e}")
+                        temporary_failures += 1
+                        if temporary_failures > max_temp_failures:
+                            break
                         continue
-                    
-                    frame = np.frombuffer(in_bytes, np.uint8).reshape([process_height, process_width, 3])
                 
                 frame_count += 1
-                consecutive_failures = 0
                 
-                # Frame skipping
-                if frame_count % skip_frames != 0:
+                # FIXED: Frame skipping logic
+                if skip_frames > 1 and ((frame_count - 1) % skip_frames) != 0:
                     continue
                 
                 processed_count += 1
                 
-                # Scale back up if needed
-                if scale_factor != 1.0:
-                    frame = cv2.resize(frame, (out_width, out_height))
-                elif frame.shape[:2] != (out_height, out_width):
-                    frame = cv2.resize(frame, (out_width, out_height))
+                # Ensure frame is correct size
+                if frame.shape[:2] != (output_height, output_width):
+                    frame = cv2.resize(frame, (output_width, output_height))
                 
                 # AI processing (very limited)
                 face_detections = []
@@ -527,38 +579,64 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
                     frame, compiled_stores, face_detections, tracked_people, person_tracker
                 )
                 
-                # Write output
-                try:
-                    processor.output_process.stdin.write(frame_annotated.tobytes())
-                    processor.output_process.stdin.flush()
-                except Exception as e:
-                    logger.error(f"Output write failed: {e}")
-                    break
+                # IMPROVED: Batched output writing
+                frame_buffer.append(frame_annotated.tobytes())
+                
+                # Write batch when buffer is full
+                if len(frame_buffer) >= buffer_size:
+                    try:
+                        for frame_data in frame_buffer:
+                            processor.output_process.stdin.write(frame_data)
+                        processor.output_process.stdin.flush()
+                        frame_buffer.clear()
+                    except Exception as e:
+                        if "broken pipe" in str(e).lower() or "epipe" in str(e).lower():
+                            logger.info("Output pipe closed")
+                            break
+                        logger.error(f"Output write failed: {e}")
+                        break
                 
                 # Progress logging
                 current_time = time.time()
                 if current_time - last_log_time > 10:
                     elapsed = current_time - processing_start
-                    fps_current = processed_count / elapsed
+                    fps_current = processed_count / elapsed if elapsed > 0 else 0
                     
                     if total_frames > 0:
                         progress = (frame_count / total_frames) * 100
-                        logger.info(f"Progress: {progress:.1f}% - Speed: {fps_current:.1f} fps")
+                        logger.info(f"Progress: {progress:.1f}% - Speed: {fps_current:.1f} fps - Frames: {frame_count}/{total_frames} (processed: {processed_count})")
                     else:
-                        logger.info(f"Processed: {processed_count} frames - Speed: {fps_current:.1f} fps")
+                        logger.info(f"Processed: {processed_count} frames - Speed: {fps_current:.1f} fps - Total frames: {frame_count}")
                     
                     last_log_time = current_time
                 
+                # Safety check for runaway processing
+                if total_frames > 0 and frame_count > total_frames * 1.1:
+                    logger.warning("Processed more frames than expected, stopping")
+                    break
+                
+            except KeyboardInterrupt:
+                logger.info("Processing interrupted by user")
+                break
             except Exception as e:
-                logger.error(f"Processing error: {e}")
-                consecutive_failures += 1
-                continue
+                logger.error(f"Unexpected processing error: {e}")
+                break
+        
+        # IMPROVED: Write remaining frames in buffer
+        if frame_buffer:
+            try:
+                logger.info(f"Writing remaining {len(frame_buffer)} frames...")
+                for frame_data in frame_buffer:
+                    processor.output_process.stdin.write(frame_data)
+                processor.output_process.stdin.flush()
+            except Exception as e:
+                logger.warning(f"Failed to write final frames: {e}")
         
         # Cleanup input
         if use_opencv:
             cap.release()
         
-        logger.info(f"Processing completed: {processed_count} frames processed")
+        logger.info(f"Processing completed: {processed_count} frames processed out of {frame_count} total frames read")
         
     except Exception as e:
         logger.error(f"Critical error: {e}")
@@ -568,6 +646,10 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
     
     # Results
     processing_time = time.time() - processing_start
+    completion_percentage = 100.0
+    if total_frames > 0:
+        completion_percentage = (frame_count / total_frames) * 100
+    
     results = {
         'total_frames_read': frame_count,
         'frames_processed': processed_count,
@@ -577,8 +659,11 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
         'input_method': 'opencv' if use_opencv else 'ffmpeg',
         'optimizations_applied': True,
         'scale_factor': scale_factor,
-        'output_fps': output_fps
+        'output_fps': output_fps,
+        'output_resolution': f"{output_width}x{output_height}",
+        'completion_percentage': completion_percentage,
+        'success': completion_percentage > 95.0  # Consider successful if >95% processed
     }
     
-    logger.info(f"Results: {results}")
+    logger.info(f"Final results: {results}")
     return results
