@@ -405,5 +405,6 @@ def start_process(camera, output_path):
         return results
         
     except Exception as e:
+        print("Hello")
         logger.error(f"Error in video processing: {e}")
         raise
