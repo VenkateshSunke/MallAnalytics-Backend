@@ -216,7 +216,15 @@ def start_process(camera, output_path, track_index=None):
         except ffmpeg.Error as e:
             logger.error(f"FFmpeg probe failed: {e}")
             logger.error(f"FFmpeg stderr: {e.stderr.decode() if e.stderr else 'No stderr'}")
-            raise ValueError(f"Could not probe video file: {video_path}")
+            
+            # Try with error tolerance
+            try:
+                logger.info("Retrying probe with error tolerance...")
+                probe = ffmpeg.probe(video_path, v='error', select_streams='v:0')
+                logger.info("Video probe successful with error tolerance")
+            except Exception as retry_e:
+                logger.error(f"FFmpeg probe failed even with error tolerance: {retry_e}")
+                raise ValueError(f"Could not probe video file: {video_path}")
         except Exception as e:
             logger.error(f"Unexpected error during video probe: {e}")
             raise
@@ -232,7 +240,7 @@ def start_process(camera, output_path, track_index=None):
         # Select video stream
         if track_index is not None:
             if track_index >= len(video_streams):
-                raise ValueError(f"Track index {track_index} not found. Available tracks: 0-{len(video_streams)-1}")
+                raise ValueError(f"Invalid track_index {track_index}, only {len(video_streams)} tracks available.")
             selected_stream = video_streams[track_index]
             logger.info(f"Selected video track {track_index} (stream index {selected_stream['index']})")
         else:
@@ -287,6 +295,19 @@ def start_process(camera, output_path, track_index=None):
             # Build FFmpeg input command
             input_args = {'loglevel': 'error'}  # Reduce FFmpeg log noise
             
+            # Add error tolerance for corrupted files
+            input_args.update({
+                'err_detect': 'ignore_err',  # Ignore errors and continue
+                'fflags': '+genpts+discardcorrupt',  # Generate timestamps and discard corrupt frames
+                'max_error_rate': '0.0'  # Allow some errors
+            })
+            
+            # Add additional parameters for severely corrupted files
+            input_args.update({
+                'analyzeduration': '1000000',  # Analyze longer duration
+                'probesize': '1000000'  # Larger probe size
+            })
+            
             # Handle track selection more robustly
             if track_index is not None and track_index < len(video_streams):
                 # Use map to select specific video stream
@@ -305,13 +326,57 @@ def start_process(camera, output_path, track_index=None):
                 # Apply stream selection in the output
                 selected_stream = video_streams[track_index]
                 stream_index = selected_stream['index']
-                output_stream = input_stream.output(
-                    'pipe:', 
-                    format='rawvideo', 
-                    pix_fmt='bgr24',
-                    loglevel='error',
-                    map=f'0:v:{stream_index}'  # Select specific video stream
-                )
+                
+                # Validate that the stream index is valid
+                if stream_index < 0:
+                    logger.warning(f"Invalid stream index {stream_index}, using default video stream")
+                    output_stream = input_stream.video.output(
+                        'pipe:', 
+                        format='rawvideo', 
+                        pix_fmt='bgr24',
+                        loglevel='error'
+                    )
+                else:
+                    # Check if this stream index actually exists in the video
+                    valid_stream_indices = [stream['index'] for stream in video_streams]
+                    if stream_index not in valid_stream_indices:
+                        logger.warning(f"Stream index {stream_index} not found in valid streams {valid_stream_indices}, using default")
+                        output_stream = input_stream.video.output(
+                            'pipe:', 
+                            format='rawvideo', 
+                            pix_fmt='bgr24',
+                            loglevel='error'
+                        )
+                    else:
+                        try:
+                            # Use the track index (position) for FFmpeg map, not stream_index
+                            output_stream = input_stream.output(
+                                'pipe:', 
+                                format='rawvideo', 
+                                pix_fmt='bgr24',
+                                loglevel='error',
+                                map=f'0:v:{track_index}'  # Use track_index (position), not stream_index
+                            )
+                            logger.info(f"Selected FFmpeg video track 0:v:{track_index} (stream index {stream_index})")
+                        except Exception as e:
+                            logger.warning(f"Failed to select track {track_index}, trying alternative approach: {e}")
+                            try:
+                                # Try using stream selection without map
+                                output_stream = input_stream.video.output(
+                                    'pipe:', 
+                                    format='rawvideo', 
+                                    pix_fmt='bgr24',
+                                    loglevel='error'
+                                )
+                                logger.info("Using default video stream as fallback")
+                            except Exception as fallback_e:
+                                logger.warning(f"Fallback also failed, using basic output: {fallback_e}")
+                                output_stream = input_stream.video.output(
+                                    'pipe:', 
+                                    format='rawvideo', 
+                                    pix_fmt='bgr24',
+                                    loglevel='error'
+                                )
             else:
                 # Use default video stream
                 output_stream = input_stream.video.output(
