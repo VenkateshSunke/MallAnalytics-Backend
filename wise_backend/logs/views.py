@@ -4,17 +4,16 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.http import JsonResponse
 import os
-from .tasks import (
-    # add_movement_log_to_queue, 
-    # get_queue_status, 
-    # clear_movement_logs_queue,
-    # test_celery_task,
-    # process_movement_logs_batch,
-    # start_visit,
-    # end_visit,
-    start_process
-)
-from .services.videoProcessing import get_video_info
+# from .tasks import (
+#     add_movement_log_to_queue, 
+#     get_queue_status, 
+#     clear_movement_logs_queue,
+#     test_celery_task,
+#     process_movement_logs_batch,
+#     start_visit,
+#     end_visit,
+# )
+from .services.videoProcessing import start_process
 from .models import MovementLog
 from core.models import UserMovement, Visit, User
 import logging
@@ -617,12 +616,15 @@ class TestVideoProcessingView(APIView):
     POST /api/logs/test-video-processing/ - Test video processing function with ffmpeg support
     """
     def post(self, request):
+        logger.info("TestVideoProcessingView.post() called")
         try:
             # Get parameters from request
             video_path = request.data.get('video_path')
             camera_id = request.data.get('camera_id', 'test_camera_001')
             camera_name = request.data.get('camera_name', 'Test Camera')
             video_track_index = request.data.get('video_track_index', 0)  # Default to first track
+            
+            logger.info(f"Received parameters: video_path={video_path}, camera_id={camera_id}, track_index={video_track_index}")
             
             if not video_path:
                 return Response(
@@ -654,8 +656,10 @@ class TestVideoProcessingView(APIView):
             logger.info(f"Video path: {video_path}")
             logger.info(f"Video track index: {video_track_index}")
             
+            logger.info("About to call start_process function...")
             # Call the start_process function directly with track index
             results = start_process(camera_config, video_path, video_track_index)
+            logger.info("start_process function completed successfully")
             
             return Response({
                 'message': 'Video processing completed successfully',
