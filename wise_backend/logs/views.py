@@ -587,6 +587,19 @@ def get_video_info(video_path):
         if total_duration == 0 and video_streams:
             total_duration = max(stream.get('duration', 0) for stream in video_streams)
         
+        # Update video streams with container duration if they have zero duration
+        for stream in video_streams:
+            if stream.get('duration', 0) == 0 and total_duration > 0:
+                stream['duration'] = total_duration
+                logger.info(f"Updated track {stream.get('track_index')} duration from 0 to {total_duration} (using container duration)")
+            
+            # Estimate frame count if nb_frames is zero but we have duration and fps
+            if stream.get('nb_frames', 0) == 0 and stream.get('duration', 0) > 0 and stream.get('fps', 0) > 0:
+                estimated_frames = int(stream['duration'] * stream['fps'])
+                stream['nb_frames'] = estimated_frames
+                stream['estimated_frames'] = True  # Flag to indicate this is an estimate
+                logger.info(f"Estimated track {stream.get('track_index')} frames: {estimated_frames} (duration={stream['duration']}s * fps={stream['fps']})")
+        
         # Build comprehensive video info
         video_info = {
             'filename': format_info.get('filename', video_path),
@@ -623,21 +636,54 @@ class TestVideoProcessingView(APIView):
             camera_id = request.data.get('camera_id', 'test_camera_001')
             camera_name = request.data.get('camera_name', 'Test Camera')
             video_track_index = request.data.get('video_track_index', 0)  # Default to first track
-            
+
             logger.info(f"Received parameters: video_path={video_path}, camera_id={camera_id}, track_index={video_track_index}")
-            
+
             if not video_path:
-                return Response(
-                    {'error': 'video_path is required'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({'error': 'video_path is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Validate video file
+            if not os.path.exists(video_path):
+                return Response({'error': f'Video file not found: {video_path}'}, status=status.HTTP_404_NOT_FOUND)
+
+            # Get stream info to validate track
+            video_info = get_video_info(video_path)
             
-            # Create a test camera configuration
+            # More lenient validation for corrupted files - check if tracks exist and have basic info
+            valid_tracks = []
+            for s in video_info.get('video_streams', []):
+                # Check if track has basic video properties (width, height, codec)
+                has_basic_info = (
+                    int(s.get('width', 0)) > 0 and 
+                    int(s.get('height', 0)) > 0 and 
+                    s.get('codec', '') != 'unknown'
+                )
+                
+                # For corrupted files, accept tracks with basic info even if duration/frames are 0
+                if has_basic_info:
+                    valid_tracks.append(s)
+                    logger.info(f"Track {s.get('track_index')} accepted (basic info present, duration={s.get('duration')}, frames={s.get('nb_frames')})")
+
+            if not valid_tracks:
+                return Response({'error': 'No valid video tracks found (missing basic video properties)'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # If user provided invalid track index, fall back to first valid one
+            if video_track_index >= len(video_info['video_streams']):
+                logger.warning(f"Track index {video_track_index} out of bounds, falling back to 0")
+                video_track_index = 0
+
+            selected_track = video_info['video_streams'][video_track_index]
+            if selected_track.get('duration', 0) == 0 or selected_track.get('nb_frames', 0) == 0:
+                logger.warning(f"Selected track {video_track_index} has zero duration or frames. This is acceptable for corrupted files.")
+                # Don't change the track index - let the processing handle it
+                # The error tolerance parameters in videoProcessing.py should handle corrupted streams
+
+            # Create test camera config
             camera_config = {
                 'id': camera_id,
                 'name': camera_name,
                 'selected_tracks': [1, 2],
-                'aws_enabled': True,  # Always enabled for testing
+                'aws_enabled': True,
                 'stores': {
                     'store_001': {
                         'name': 'Test Store 1',
@@ -651,35 +697,24 @@ class TestVideoProcessingView(APIView):
                     }
                 }
             }
-            
-            logger.info(f"Testing video processing with camera: {camera_config}")
-            logger.info(f"Video path: {video_path}")
-            logger.info(f"Video track index: {video_track_index}")
-            
-            logger.info("About to call start_process function...")
-            # Call the start_process function directly with track index
+
+            logger.info("About to call start_process()...")
             results = start_process(camera_config, video_path, video_track_index)
-            logger.info("start_process function completed successfully")
-            
+            logger.info("start_process completed successfully")
+
             return Response({
                 'message': 'Video processing completed successfully',
                 'results': results,
                 'camera_config': camera_config
             }, status=status.HTTP_200_OK)
-            
+
         except FileNotFoundError as e:
             logger.error(f"Video file not found: {e}")
-            return Response(
-                {'error': f'Video file not found: {str(e)}'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({'error': f'Video file not found: {str(e)}'}, status=status.HTTP_404_NOT_FOUND)
+
         except Exception as e:
             logger.error(f"Error in video processing: {e}")
-            return Response(
-                {'error': f'Video processing failed: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
+            return Response({'error': f'Video processing failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class VideoInfoView(APIView):
     """

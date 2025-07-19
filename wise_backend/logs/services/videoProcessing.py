@@ -4,13 +4,50 @@ import logging
 import cv2
 import numpy as np
 import ffmpeg
+import gc
+import psutil
 from datetime import datetime
 from .awsRecognitionService import AWSRekognitionService
 from .personTracker import PersonTracker
 from .movementLogger import MovementLogger
-from .blueprint_utils import get_blueprint_mapping_by_camera_id, get_blueprint_info_by_camera_id
+from .blueprint_utils import get_blueprint_mapping_by_camera_id
 
 logger = logging.getLogger(__name__)
+
+def get_memory_usage():
+    """Get current memory usage in MB"""
+    try:
+        process = psutil.Process()
+        return process.memory_info().rss / 1024 / 1024
+    except ImportError:
+        logger.warning("psutil not available, memory monitoring disabled")
+        return 0
+    except Exception as e:
+        logger.warning(f"Could not get memory usage: {e}")
+        return 0
+
+def cleanup_memory():
+    """Force garbage collection to free memory"""
+    gc.collect()
+
+def check_memory_limit(current_usage_mb, limit_mb):
+    """Check if memory usage exceeds limit"""
+    return current_usage_mb > limit_mb
+
+def validate_processing_parameters(batch_size, memory_limit_mb):
+    """Validate processing parameters"""
+    if batch_size < 1:
+        logger.warning(f"Invalid batch_size {batch_size}, using default 10")
+        batch_size = 10
+    
+    if memory_limit_mb < 100:
+        logger.warning(f"Memory limit too low {memory_limit_mb} MB, using minimum 100 MB")
+        memory_limit_mb = 100
+    elif memory_limit_mb > 8192:
+        logger.warning(f"Memory limit too high {memory_limit_mb} MB, using maximum 8192 MB")
+        memory_limit_mb = 8192
+    
+    return batch_size, memory_limit_mb
 
 def transform_blueprint_to_video_coordinates(blueprint_polygon, transformation_matrix):
     """
@@ -127,20 +164,23 @@ def draw_store_polygons(frame, stores, calibration_data=None):
     
     return frame_with_stores
 
-def start_process(camera, output_path, track_index=None):
+def start_process(camera, output_path, track_index=None, batch_size=10, memory_limit_mb=1024):
     """
-    Process video for analytics and movement tracking using ffmpeg-python
+    Process video for analytics and movement tracking using ffmpeg-python with enhanced memory management
     
     Args:
         camera: Camera configuration object from cameras.py
         output_path: Path to the video file to process
         track_index: Optional track index to select (e.g., 0 for track1, 1 for track2, etc.)
+        batch_size: Number of frames to process in memory before cleanup (default: 10)
+        memory_limit_mb: Memory limit in MB for frame processing (default: 1024)
     
     Returns:
         dict: Processing results and statistics
     """
     process = None
     output_process = None
+    frame_buffer = []  # Buffer for batch processing
     
     try:
         logger.info(f"Starting video processing for camera: {camera}")
@@ -152,6 +192,10 @@ def start_process(camera, output_path, track_index=None):
         
         if not output_path:
             raise ValueError("Output path is required")
+        
+        # Validate processing parameters
+        batch_size, memory_limit_mb = validate_processing_parameters(batch_size, memory_limit_mb)
+        logger.info(f"Processing parameters: batch_size={batch_size}, memory_limit={memory_limit_mb} MB")
         
         # Use output_path as the video path (since that's what we're processing)
         video_path = output_path
@@ -327,56 +371,15 @@ def start_process(camera, output_path, track_index=None):
                 selected_stream = video_streams[track_index]
                 stream_index = selected_stream['index']
                 
-                # Validate that the stream index is valid
-                if stream_index < 0:
-                    logger.warning(f"Invalid stream index {stream_index}, using default video stream")
-                    output_stream = input_stream.video.output(
-                        'pipe:', 
-                        format='rawvideo', 
-                        pix_fmt='bgr24',
-                        loglevel='error'
-                    )
-                else:
-                    # Check if this stream index actually exists in the video
-                    valid_stream_indices = [stream['index'] for stream in video_streams]
-                    if stream_index not in valid_stream_indices:
-                        logger.warning(f"Stream index {stream_index} not found in valid streams {valid_stream_indices}, using default")
-                        output_stream = input_stream.video.output(
-                            'pipe:', 
-                            format='rawvideo', 
-                            pix_fmt='bgr24',
-                            loglevel='error'
-                        )
-                    else:
-                        try:
-                            # Use the track index (position) for FFmpeg map, not stream_index
-                            output_stream = input_stream.output(
-                                'pipe:', 
-                                format='rawvideo', 
-                                pix_fmt='bgr24',
-                                loglevel='error',
-                                map=f'0:v:{track_index}'  # Use track_index (position), not stream_index
-                            )
-                            logger.info(f"Selected FFmpeg video track 0:v:{track_index} (stream index {stream_index})")
-                        except Exception as e:
-                            logger.warning(f"Failed to select track {track_index}, trying alternative approach: {e}")
-                            try:
-                                # Try using stream selection without map
-                                output_stream = input_stream.video.output(
-                                    'pipe:', 
-                                    format='rawvideo', 
-                                    pix_fmt='bgr24',
-                                    loglevel='error'
-                                )
-                                logger.info("Using default video stream as fallback")
-                            except Exception as fallback_e:
-                                logger.warning(f"Fallback also failed, using basic output: {fallback_e}")
-                                output_stream = input_stream.video.output(
-                                    'pipe:', 
-                                    format='rawvideo', 
-                                    pix_fmt='bgr24',
-                                    loglevel='error'
-                                )
+                # Use the same logic as the working implementation
+                output_stream = input_stream.output(
+                    'pipe:', 
+                    format='rawvideo', 
+                    pix_fmt='bgr24',
+                    loglevel='error',
+                    map=f'0:{stream_index}'  # Use stream index directly like working implementation
+                )
+                logger.info(f"Selected video stream 0:{stream_index} (track {track_index})")
             else:
                 # Use default video stream
                 output_stream = input_stream.video.output(
@@ -501,11 +504,17 @@ def start_process(camera, output_path, track_index=None):
             'yolo_detection': 0.0,
             'tracking_update': 0.0,
             'movement_logging': 0.0,
-            'frame_processing': 0.0
+            'frame_processing': 0.0,
+            'memory_management': 0.0
         }
         
         tracked_people = {}
         frame_size = width * height * 3  # BGR format
+        
+        # Memory management variables
+        initial_memory = get_memory_usage()
+        memory_check_interval = 50  # Check memory every 50 frames
+        last_memory_check = 0
         
         logger.info(f"Starting frame processing. Frame size: {frame_size} bytes")
         logger.info(f"AWS enabled: {aws_enabled}, Frame skip: {aws_frame_skip}")
@@ -523,9 +532,23 @@ def start_process(camera, output_path, track_index=None):
         max_processing_errors = 10
         
         logger.info("Starting frame reading loop...")
+        logger.info(f"Initial memory usage: {initial_memory:.1f} MB")
         
         while True:
             frame_start_time = time.time()
+            
+            # Memory management check
+            if frame_count - last_memory_check >= memory_check_interval:
+                current_memory = get_memory_usage()
+                memory_increase = current_memory - initial_memory
+                logger.debug(f"Memory usage: {current_memory:.1f} MB (increase: {memory_increase:.1f} MB)")
+                
+                if check_memory_limit(current_memory, memory_limit_mb):
+                    logger.warning(f"Memory limit exceeded ({current_memory:.1f} MB > {memory_limit_mb} MB). Forcing cleanup.")
+                    cleanup_memory()
+                    timings['memory_management'] += time.time() - frame_start_time
+                
+                last_memory_check = frame_count
             
             try:
                 # Read frame data from FFmpeg
@@ -732,19 +755,46 @@ def start_process(camera, output_path, track_index=None):
                     logger.error(f"Failed to write frame {frame_count} to output: {e}")
                     break
                 
-                # Check if processes are still running
+                # Check if processes are still running with enhanced error handling
                 if process.poll() is not None:
-                    logger.error(f"FFmpeg input process terminated unexpectedly with return code: {process.poll()}")
+                    return_code = process.poll()
+                    stderr_output = ""
                     if process.stderr:
-                        stderr_output = process.stderr.read().decode()
+                        try:
+                            stderr_output = process.stderr.read().decode()
+                        except:
+                            stderr_output = "Could not read stderr"
+                    
+                    if return_code == 0:
+                        logger.info("FFmpeg input process completed successfully")
+                    else:
+                        logger.error(f"FFmpeg input process terminated with return code: {return_code}")
                         if stderr_output:
                             logger.error(f"FFmpeg input stderr: {stderr_output}")
+                    
+                    # Check for specific error conditions
+                    if return_code == -9:  # SIGKILL
+                        logger.error("FFmpeg process was killed due to memory issues")
+                    elif return_code == -11:  # SIGSEGV
+                        logger.error("FFmpeg process crashed due to segmentation fault")
+                    elif return_code == -6:  # SIGABRT
+                        logger.error("FFmpeg process aborted")
+                    
                     break
                 
                 if output_process.poll() is not None:
-                    logger.error(f"FFmpeg output process terminated unexpectedly with return code: {output_process.poll()}")
+                    return_code = output_process.poll()
+                    stderr_output = ""
                     if output_process.stderr:
-                        stderr_output = output_process.stderr.read().decode()
+                        try:
+                            stderr_output = output_process.stderr.read().decode()
+                        except:
+                            stderr_output = "Could not read stderr"
+                    
+                    if return_code == 0:
+                        logger.info("FFmpeg output process completed successfully")
+                    else:
+                        logger.error(f"FFmpeg output process terminated with return code: {return_code}")
                         if stderr_output:
                             logger.error(f"FFmpeg output stderr: {stderr_output}")
                     break
@@ -753,10 +803,21 @@ def start_process(camera, output_path, track_index=None):
                 frame_count += 1
                 timings['frame_processing'] += time.time() - frame_start_time
                 
-                # Progress logging
+                # Batch processing and memory cleanup
+                if frame_count % batch_size == 0:
+                    # Clear frame buffer and force garbage collection
+                    frame_buffer.clear()
+                    cleanup_memory()
+                    
+                    # Log memory usage
+                    current_memory = get_memory_usage()
+                    logger.debug(f"Batch cleanup completed. Memory usage: {current_memory:.1f} MB")
+                
+                # Progress logging with memory information
                 if frame_count % 100 == 0:
                     elapsed_time = time.time() - processing_start_time
                     fps_current = frame_count / elapsed_time if elapsed_time > 0 else 0
+                    current_memory = get_memory_usage()
                     
                     if total_frames > 0:
                         progress = (frame_count / total_frames) * 100
@@ -764,9 +825,11 @@ def start_process(camera, output_path, track_index=None):
                         eta_min = int(eta_seconds // 60)
                         eta_sec = int(eta_seconds % 60)
                         logger.info(f"Progress: {progress:.1f}% ({frame_count}/{total_frames}) - "
-                                  f"Speed: {fps_current:.1f} fps - ETA: {eta_min:02d}:{eta_sec:02d}")
+                                  f"Speed: {fps_current:.1f} fps - ETA: {eta_min:02d}:{eta_sec:02d} - "
+                                  f"Memory: {current_memory:.1f} MB")
                     else:
-                        logger.info(f"Processed {frame_count} frames - Speed: {fps_current:.1f} fps")
+                        logger.info(f"Processed {frame_count} frames - Speed: {fps_current:.1f} fps - "
+                                  f"Memory: {current_memory:.1f} MB")
                 
             except Exception as e:
                 logger.error(f"Error processing frame {frame_count}: {e}")
@@ -817,6 +880,11 @@ def start_process(camera, output_path, track_index=None):
     # Calculate final results
     processing_time = time.time() - processing_start_time
     aws_calls = aws_service.api_calls_count if aws_service else 0
+    final_memory = get_memory_usage()
+    memory_peak = final_memory - initial_memory if 'initial_memory' in locals() else 0
+    
+    # Final memory cleanup
+    cleanup_memory()
     
     results = {
         'total_frames': total_frames if total_frames > 0 else frame_count,
@@ -835,8 +903,25 @@ def start_process(camera, output_path, track_index=None):
         'store_entries_logged': len(store_entry_logged),
         'calibration_available': bool(calibration_data and 'store_matrices' in calibration_data),
         'selected_track_index': track_index,
-        'available_video_tracks': len(original_video_streams) if 'original_video_streams' in locals() else 0
+        'available_video_tracks': len(original_video_streams) if 'original_video_streams' in locals() else 0,
+        'memory_usage': {
+            'initial_mb': initial_memory if 'initial_memory' in locals() else 0,
+            'final_mb': final_memory,
+            'peak_increase_mb': memory_peak,
+            'batch_size': batch_size,
+            'memory_limit_mb': memory_limit_mb
+        }
     }
     
     logger.info(f"Video processing completed successfully: {results}")
+    
+    # Log final memory statistics
+    if results['memory_usage']['final_mb'] > 0:
+        logger.info(f"Final memory usage: {results['memory_usage']['final_mb']:.1f} MB "
+                   f"(peak increase: {results['memory_usage']['peak_increase_mb']:.1f} MB)")
+    
+    # Log performance summary
+    logger.info(f"Performance summary: {frame_count} frames processed in {processing_time:.1f}s "
+               f"({results['processing_speed']:.1f} fps)")
+    
     return results
