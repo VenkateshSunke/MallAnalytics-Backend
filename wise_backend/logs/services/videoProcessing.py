@@ -418,8 +418,10 @@ def start_process(camera, output_path, track_index=None, batch_size=10, memory_l
                     pass
             raise
         
-        # Setup output video path
-        processed_output_path = output_path.replace('.mp4', '_processed.mp4')
+        # Setup output video path - handle different video formats
+        base_name = os.path.splitext(output_path)[0]
+        extension = os.path.splitext(output_path)[1]
+        processed_output_path = f"{base_name}_processed{extension}"
         
         output_dir = os.path.dirname(processed_output_path)
         if output_dir and not os.path.exists(output_dir):
@@ -429,6 +431,19 @@ def start_process(camera, output_path, track_index=None, batch_size=10, memory_l
             except Exception as e:
                 logger.error(f"Failed to create output directory: {e}")
                 raise
+        
+        # Check if output directory is writable
+        if output_dir:
+            if not os.access(output_dir, os.W_OK):
+                logger.error(f"Output directory is not writable: {output_dir}")
+                raise PermissionError(f"Cannot write to output directory: {output_dir}")
+            logger.info(f"Output directory is writable: {output_dir}")
+        else:
+            # No directory specified, use current directory
+            if not os.access('.', os.W_OK):
+                logger.error("Current directory is not writable")
+                raise PermissionError("Cannot write to current directory")
+            logger.info("Using current directory for output")
         
         # Setup FFmpeg output process
         logger.info("Setting up FFmpeg output process...")
@@ -556,15 +571,21 @@ def start_process(camera, output_path, track_index=None, batch_size=10, memory_l
                 in_bytes = process.stdout.read(frame_size)
                 
                 if not in_bytes:
-                    logger.info("No more data from FFmpeg (EOF)")
+                    logger.info(f"No more data from FFmpeg (EOF) at frame {frame_count}")
                     # Check if process is still running
                     if process.poll() is not None:
-                        logger.info(f"FFmpeg process ended with return code: {process.poll()}")
+                        return_code = process.poll()
+                        logger.info(f"FFmpeg process ended with return code: {return_code}")
                         # Read any stderr output
                         if process.stderr:
-                            stderr_output = process.stderr.read().decode()
-                            if stderr_output:
-                                logger.error(f"FFmpeg stderr: {stderr_output}")
+                            try:
+                                stderr_output = process.stderr.read().decode()
+                                if stderr_output:
+                                    logger.error(f"FFmpeg stderr: {stderr_output}")
+                            except Exception as e:
+                                logger.warning(f"Could not read FFmpeg stderr: {e}")
+                    else:
+                        logger.warning("FFmpeg process still running but no data received")
                     break
                 
                 if len(in_bytes) < frame_size:
@@ -751,8 +772,10 @@ def start_process(camera, output_path, track_index=None, batch_size=10, memory_l
                 # Write frame to output
                 try:
                     output_process.stdin.write(frame_with_annotations.tobytes())
+                    logger.debug(f"Successfully wrote frame {frame_count} to output")
                 except Exception as e:
                     logger.error(f"Failed to write frame {frame_count} to output: {e}")
+                    logger.error(f"Output process status: {output_process.poll()}")
                     break
                 
                 # Check if processes are still running with enhanced error handling
@@ -867,9 +890,18 @@ def start_process(camera, output_path, track_index=None, batch_size=10, memory_l
             try:
                 if output_process.stdin:
                     output_process.stdin.close()
+                    logger.debug("Output process stdin closed")
                 output_process.terminate()
                 output_process.wait(timeout=5)
                 logger.info("Output process cleaned up")
+                
+                # Check if output file was created
+                if os.path.exists(processed_output_path):
+                    file_size = os.path.getsize(processed_output_path)
+                    logger.info(f"Output video created: {processed_output_path} ({file_size} bytes)")
+                else:
+                    logger.warning(f"Output video file not found: {processed_output_path}")
+                    
             except Exception as e:
                 logger.warning(f"Error cleaning up output process: {e}")
                 try:
