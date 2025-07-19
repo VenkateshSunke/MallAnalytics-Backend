@@ -370,12 +370,11 @@ def start_process(camera, output_path, track_index=None, skip_frames=2, max_reso
         use_opencv = False
         try:
             input_stream = ffmpeg.input(output_path, loglevel='error')
-            
+            video_stream = input_stream[f'v:{track_index}']  # ← track_index is now actually used
+      
             if scale_factor != 1.0:
-                video_stream = input_stream.video.filter('scale', process_width, process_height)
-            else:
-                video_stream = input_stream.video
-            
+                video_stream = video_stream.filter('scale', process_width, process_height)
+      
             output_stream = video_stream.output(
                 'pipe:', 
                 format='rawvideo', 
