@@ -239,6 +239,9 @@ def start_process(camera, output_path, track_index=None):
             selected_stream = video_streams[0]
             logger.info(f"Using default video track (stream index {selected_stream['index']})")
         
+        # Store the original video streams info for logging
+        original_video_streams = video_streams.copy()
+        
         # Get video properties from selected stream
         try:
             width = int(selected_stream['width'])
@@ -443,8 +446,8 @@ def start_process(camera, output_path, track_index=None):
         logger.info(f"AWS enabled: {aws_enabled}, Frame skip: {aws_frame_skip}")
         logger.info(f"Video properties: {width}x{height} @ {fps:.2f}fps")
         logger.info(f"Selected video stream: {selected_stream.get('index', 'unknown')}")
-        logger.info(f"Available video streams: {len(video_streams)}")
-        for i, stream in enumerate(video_streams):
+        logger.info(f"Available video streams: {len(original_video_streams)}")
+        for i, stream in enumerate(original_video_streams):
             logger.info(f"  Stream {i}: index={stream.get('index')}, codec={stream.get('codec_name')}, "
                        f"resolution={stream.get('width')}x{stream.get('height')}")
         
@@ -767,7 +770,7 @@ def start_process(camera, output_path, track_index=None):
         'store_entries_logged': len(store_entry_logged),
         'calibration_available': bool(calibration_data and 'store_matrices' in calibration_data),
         'selected_track_index': track_index,
-        'available_video_tracks': len(video_streams) if 'video_streams' in locals() else 0
+        'available_video_tracks': len(original_video_streams) if 'original_video_streams' in locals() else 0
     }
     
     logger.info(f"Video processing completed successfully: {results}")
