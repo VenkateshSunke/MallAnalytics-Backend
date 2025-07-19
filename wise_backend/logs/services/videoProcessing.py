@@ -40,7 +40,7 @@ class FrameReader:
                 raw_frame = self._read_frame_with_timeout()
                 
                 if raw_frame is None:
-                    # End of stream or error
+                    logger.info("FrameReader: FFmpeg stream ended or failed, stopping frame reader thread")
                     break
                     
                 if len(raw_frame) == self.frame_size:
@@ -71,6 +71,7 @@ class FrameReader:
         try:
             # Check if process is still running
             if self.ffmpeg_process.poll() is not None:
+                logger.info("FrameReader: FFmpeg process already exited")
                 return None
                 
             # Read frame data in chunks to handle partial reads
@@ -380,7 +381,7 @@ def start_process(camera, output_path, stream_override=None):
         ffmpeg_writer = create_ffmpeg_writer(processed_output_path, width, height, fps)
         
         # Create robust frame reader
-        frame_reader = FrameReader(ffmpeg_reader, frame_size)
+        frame_reader = FrameReader(ffmpeg_reader, frame_size, buffer_size=30)
         frame_reader.start_reading()
         
         # Get blueprint mapping
@@ -599,11 +600,19 @@ def start_process(camera, output_path, stream_override=None):
             if frame_reader:
                 frame_reader.stop()
             if ffmpeg_reader:
-                if ffmpeg_reader.stdout:
-                    ffmpeg_reader.stdout.close()
-                if ffmpeg_reader.poll() is None:
-                    ffmpeg_reader.terminate()
-                    ffmpeg_reader.wait(timeout=5)
+                try:
+                    if ffmpeg_reader.stdout:
+                        ffmpeg_reader.stdout.close()
+                    if ffmpeg_reader.stderr:
+                        ffmpeg_reader.stderr.close()
+                    if ffmpeg_reader.poll() is None:
+                        ffmpeg_reader.terminate()
+                        ffmpeg_reader.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logger.warning("FFmpeg reader did not terminate in time, killing it")
+                    ffmpeg_reader.kill()
+                except Exception as e:
+                    logger.error(f"Exception during FFmpeg reader cleanup: {e}")
             if ffmpeg_writer:
                 if ffmpeg_writer.stdin:
                     ffmpeg_writer.stdin.close()
