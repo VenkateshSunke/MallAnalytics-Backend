@@ -339,7 +339,7 @@ def draw_store_polygons(frame, stores, calibration_data=None):
     
     return frame_with_stores
 
-def start_process(camera, output_path):
+def start_process(camera, output_path, stream_override=None):
     """Process video for analytics and movement tracking with improved error handling"""
     frame_reader = None
     ffmpeg_reader = None
@@ -368,6 +368,10 @@ def start_process(camera, output_path):
         # Get video properties
         fps, width, height, total_frames, stream_index = get_video_info_robust(video_path)
         frame_size = height * width * 3
+
+        if stream_override is not None:
+            logger.info(f"Overriding video stream index to {stream_override}")
+            stream_index = stream_override
         
         # Create FFmpeg processes
         ffmpeg_reader = create_ffmpeg_reader(video_path, stream_index)

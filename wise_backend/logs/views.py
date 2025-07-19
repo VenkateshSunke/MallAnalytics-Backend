@@ -523,19 +523,17 @@ class TestVideoProcessingView(APIView):
             video_path = request.data.get('video_path')
             camera_id = request.data.get('camera_id', 'test_camera_001')
             camera_name = request.data.get('camera_name', 'Test Camera')
-            
+            video_track_index = request.data.get('video_track_index', None)
+
             if not video_path:
-                return Response(
-                    {'error': 'video_path is required'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
+                return Response({'error': 'video_path is required'}, status=status.HTTP_400_BAD_REQUEST)
+
             # Create a test camera configuration
             camera_config = {
                 'id': camera_id,
                 'name': camera_name,
-                'selected_tracks': [1, 2],
-                'aws_enabled': True,  # Always enabled for testing
+                'selected_tracks': [video_track_index] if video_track_index is not None else [1, 2],
+                'aws_enabled': True,
                 'stores': {
                     'store_001': {
                         'name': 'Test Store 1',
@@ -549,13 +547,13 @@ class TestVideoProcessingView(APIView):
                     }
                 }
             }
-            
+
             logger.info(f"Testing video processing with camera: {camera_config}")
             logger.info(f"Video path: {video_path}")
-            
-            # Call the start_process function directly
-            results = start_process(camera_config, video_path)
-            
+
+            # Call the start_process function and pass the override stream index
+            results = start_process(camera_config, video_path, stream_override=int(video_track_index) if video_track_index is not None else None)
+
             return Response({
                 'message': 'Video processing completed successfully',
                 'results': results,
