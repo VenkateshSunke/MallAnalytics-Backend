@@ -1,3 +1,4 @@
+import os
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -13,6 +14,7 @@ from .tasks import (
     # end_visit,
     start_process
 )
+from .services.videoProcessing import get_video_info
 from .models import MovementLog
 from core.models import UserMovement, Visit, User
 import logging
