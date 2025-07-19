@@ -39,3 +39,7 @@ user-photos
 
 *.pt
 *.lock
+venv3
+*.mkv
+*.mp4
+*.pt

@@ -3,6 +3,7 @@ import time
 import logging
 import cv2
 import numpy as np
+import ffmpeg
 from datetime import datetime
 from .awsRecognitionService import AWSRekognitionService
 from .personTracker import PersonTracker
@@ -126,13 +127,17 @@ def draw_store_polygons(frame, stores, calibration_data=None):
     
     return frame_with_stores
 
-def start_process(camera, output_path):
+import ffmpeg
+import numpy as np
+
+def start_process(camera, output_path, track_index=None):
     """
-    Process video for analytics and movement tracking
+    Process video for analytics and movement tracking using ffmpeg-python
     
     Args:
         camera: Camera configuration object from cameras.py
         output_path: Path to the video file to process
+        track_index: Optional track index to select (e.g., 0 for track1, 1 for track2, etc.)
     
     Returns:
         dict: Processing results and statistics
@@ -158,34 +163,86 @@ def start_process(camera, output_path):
         if not video_path or not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
-        # Open video
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError(f"Could not open video file: {video_path}")
+        # Probe video to get information about tracks and properties
+        try:
+            probe = ffmpeg.probe(video_path)
+            video_streams = [stream for stream in probe['streams'] if stream['codec_type'] == 'video']
+            
+            if not video_streams:
+                raise ValueError("No video streams found in the file")
+            
+            # If track_index is specified, select that track, otherwise use the first one
+            if track_index is not None:
+                if track_index >= len(video_streams):
+                    raise ValueError(f"Track index {track_index} not found. Available tracks: 0-{len(video_streams)-1}")
+                selected_stream = video_streams[track_index]
+                logger.info(f"Selected video track {track_index} (stream index {selected_stream['index']})")
+            else:
+                selected_stream = video_streams[0]
+                logger.info(f"Using default video track (stream index {selected_stream['index']})")
+            
+            # Get video properties from selected stream
+            width = int(selected_stream['width'])
+            height = int(selected_stream['height'])
+            
+            # Get FPS
+            fps_parts = selected_stream['r_frame_rate'].split('/')
+            fps = float(fps_parts[0]) / float(fps_parts[1]) if len(fps_parts) == 2 else float(fps_parts[0])
+            if fps <= 0:
+                fps = 30  # Default to 30 FPS
+            
+            # Get total frames if available
+            total_frames = int(selected_stream.get('nb_frames', 0))
+            if total_frames == 0:
+                # Estimate from duration and fps
+                duration = float(probe['format'].get('duration', 0))
+                total_frames = int(duration * fps) if duration > 0 else 0
+                
+        except ffmpeg.Error as e:
+            logger.error(f"Error probing video: {e}")
+            raise ValueError(f"Could not probe video file: {video_path}")
         
-        # Get video properties
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30  # Default to 30 FPS
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        logger.info(f"Processing video: {width}x{height} @ {fps:.1f}fps, estimated {total_frames} frames")
+        logger.info(f"Available video tracks: {len(video_streams)}")
         
-        logger.info(f"Processing video: {width}x{height} @ {fps:.1f}fps, {total_frames} frames")
+        # Setup ffmpeg input stream
+        input_stream = ffmpeg.input(video_path)
+        
+        # If we have multiple video streams and a specific track is selected, map that stream
+        if track_index is not None and len(video_streams) > 1:
+            # Map the specific video stream
+            video_input = input_stream.video.filter('select', f'gte(n,0)').filter('setpts', 'N/FR/TB')
+            # Use stream selector for the specific track
+            process = (
+                ffmpeg
+                .input(video_path, map=f'0:{selected_stream["index"]}')
+                .output('pipe:', format='rawvideo', pix_fmt='bgr24')
+                .run_async(pipe_stdout=True, pipe_stderr=True)
+            )
+        else:
+            # Use default video stream
+            process = (
+                ffmpeg
+                .input(video_path)
+                .output('pipe:', format='rawvideo', pix_fmt='bgr24')
+                .run_async(pipe_stdout=True, pipe_stderr=True)
+            )
         
         # Setup video writer for processed output
         processed_output_path = output_path.replace('.mp4', '_processed.mp4')
-        video_writer = None
         
         output_dir = os.path.dirname(processed_output_path)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         
-        fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')  # type: ignore
-        video_writer = cv2.VideoWriter(processed_output_path, fourcc, fps, (width, height))
-        
-        if not video_writer.isOpened():
-            raise Exception("Failed to create video writer")
+        # Setup ffmpeg output writer
+        output_process = (
+            ffmpeg
+            .input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=fps)
+            .output(processed_output_path, vcodec='libx264', pix_fmt='yuv420p', r=fps)
+            .overwrite_output()
+            .run_async(pipe_stdin=True, pipe_stderr=True)
+        )
         
         # Get blueprint mapping data based on camera ID
         camera_id = str(camera.get('id', 'unknown'))
@@ -221,12 +278,22 @@ def start_process(camera, output_path):
             'movement_logging': 0.0
         }
         
+        # Initialize tracked_people to avoid "referenced before assignment" error
+        tracked_people = {}
+        
+        # Calculate frame size for reading
+        frame_size = width * height * 3  # 3 channels (BGR)
+        
         # Process frames
         while True:
             try:
-                ret, frame = cap.read()
-                if not ret:
+                # Read frame data from ffmpeg process
+                in_bytes = process.stdout.read(frame_size)
+                if not in_bytes or len(in_bytes) < frame_size:
                     break
+                
+                # Convert bytes to numpy array (frame)
+                frame = np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3])
                 
                 current_time = frame_count / fps
                 face_detections = []
@@ -356,16 +423,18 @@ def start_process(camera, output_path):
                     else:
                         logger.debug(f"Skipping movement log for unregistered person {person_id}")
                 
-                # Write annotated frame to output video
-                if video_writer and video_writer.isOpened():
-                    video_writer.write(frame_with_annotations)
+                # Write annotated frame to output video via ffmpeg
+                output_process.stdin.write(frame_with_annotations.tobytes())
                 
                 frame_count += 1
                 
                 # Log progress every 100 frames
                 if frame_count % 100 == 0:
-                    progress = (frame_count / total_frames) * 100
-                    logger.info(f"Processing progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
+                    if total_frames > 0:
+                        progress = (frame_count / total_frames) * 100
+                        logger.info(f"Processing progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
+                    else:
+                        logger.info(f"Processing frame: {frame_count}")
                     
             except Exception as e:
                 logger.error(f"Error processing frame {frame_count}: {e}")
@@ -377,28 +446,32 @@ def start_process(camera, output_path):
         aws_calls = aws_service.api_calls_count
         tracked_persons = len(tracked_people)
         
-        # Cleanup
-        cap.release()
-        if video_writer:
-            video_writer.release()
+        # Cleanup ffmpeg processes
+        process.stdout.close()
+        process.wait()
+        
+        output_process.stdin.close()
+        output_process.wait()
         
         # Results
         results = {
-            'total_frames': total_frames,
+            'total_frames': total_frames if total_frames > 0 else frame_count,
             'processed_frames': frame_count,
             'processing_time': processing_time,
             'processing_speed': frame_count / processing_time if processing_time > 0 else 0,
             'aws_api_calls': aws_calls,
             'tracked_persons': tracked_persons,
             'input_video_path': video_path,
-            'processed_video_path': processed_output_path if video_writer else None,
+            'processed_video_path': processed_output_path,
             'performance_timings': timings,
             'aws_frame_skip': aws_frame_skip,
             'camera_id': camera_id,
             'blueprint_used': bool(blueprint_mapping),
             'stores_processed': len(stores),
             'store_entries_logged': len(store_entry_logged),
-            'calibration_available': bool(calibration_data and 'store_matrices' in calibration_data)
+            'calibration_available': bool(calibration_data and 'store_matrices' in calibration_data),
+            'selected_track_index': track_index,
+            'available_video_tracks': len(video_streams)
         }
         
         logger.info(f"Video processing completed: {results}")

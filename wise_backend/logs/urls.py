@@ -25,4 +25,5 @@ urlpatterns = [
     
     # Video processing test endpoint
     path('test-video-processing/', views.TestVideoProcessingView.as_view(), name='test-video-processing'),
+    path('video-info/', views.VideoInfoView.as_view(), name='video-info'),
 ] 

@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.http import JsonResponse
+import os
 from .tasks import (
     # add_movement_log_to_queue, 
     # get_queue_status, 
@@ -16,6 +17,7 @@ from .models import MovementLog
 from core.models import UserMovement, Visit, User
 import logging
 from django.utils import timezone
+import ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -512,10 +514,105 @@ class UserVisitDetailView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+def get_video_info(video_path):
+    """
+    Get comprehensive video information including available tracks using ffmpeg
+    
+    Args:
+        video_path: Path to the video file
+    
+    Returns:
+        dict: Video information including streams, tracks, duration, etc.
+    """
+    try:
+        # Probe the video file
+        probe = ffmpeg.probe(video_path)
+        
+        # Extract video streams
+        video_streams = []
+        audio_streams = []
+        
+        for i, stream in enumerate(probe['streams']):
+            if stream['codec_type'] == 'video':
+                # Get video stream info
+                fps_parts = stream.get('r_frame_rate', '30/1').split('/')
+                fps = float(fps_parts[0]) / float(fps_parts[1]) if len(fps_parts) == 2 else float(fps_parts[0])
+                
+                video_info = {
+                    'track_index': i,
+                    'stream_index': stream['index'],
+                    'codec': stream.get('codec_name', 'unknown'),
+                    'width': int(stream.get('width', 0)),
+                    'height': int(stream.get('height', 0)),
+                    'fps': round(fps, 2),
+                    'duration': float(stream.get('duration', 0)),
+                    'nb_frames': int(stream.get('nb_frames', 0)),
+                    'pixel_format': stream.get('pix_fmt', 'unknown'),
+                    'profile': stream.get('profile', 'unknown'),
+                    'level': stream.get('level', 'unknown')
+                }
+                
+                # Add bitrate if available
+                if 'bit_rate' in stream:
+                    video_info['bitrate'] = int(stream['bit_rate'])
+                
+                # Add display aspect ratio if available
+                if 'display_aspect_ratio' in stream:
+                    video_info['aspect_ratio'] = stream['display_aspect_ratio']
+                
+                video_streams.append(video_info)
+                
+            elif stream['codec_type'] == 'audio':
+                # Get audio stream info
+                audio_info = {
+                    'stream_index': stream['index'],
+                    'codec': stream.get('codec_name', 'unknown'),
+                    'sample_rate': int(stream.get('sample_rate', 0)),
+                    'channels': int(stream.get('channels', 0)),
+                    'duration': float(stream.get('duration', 0)),
+                    'channel_layout': stream.get('channel_layout', 'unknown')
+                }
+                
+                if 'bit_rate' in stream:
+                    audio_info['bitrate'] = int(stream['bit_rate'])
+                
+                audio_streams.append(audio_info)
+        
+        # Get format information
+        format_info = probe.get('format', {})
+        
+        # Calculate total duration from format if not available in streams
+        total_duration = float(format_info.get('duration', 0))
+        if total_duration == 0 and video_streams:
+            total_duration = max(stream.get('duration', 0) for stream in video_streams)
+        
+        # Build comprehensive video info
+        video_info = {
+            'filename': format_info.get('filename', video_path),
+            'format_name': format_info.get('format_name', 'unknown'),
+            'format_long_name': format_info.get('format_long_name', 'unknown'),
+            'duration': total_duration,
+            'size': int(format_info.get('size', 0)),
+            'bitrate': int(format_info.get('bit_rate', 0)) if 'bit_rate' in format_info else None,
+            'video_streams': video_streams,
+            'audio_streams': audio_streams,
+            'total_streams': len(probe['streams']),
+            'video_tracks_count': len(video_streams),
+            'audio_tracks_count': len(audio_streams)
+        }
+        
+        return video_info
+        
+    except ffmpeg.Error as e:
+        logger.error(f"FFmpeg error while probing video: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error getting video info: {e}")
+        return None
 
 class TestVideoProcessingView(APIView):
     """
-    POST /api/logs/test-video-processing/ - Test video processing function
+    POST /api/logs/test-video-processing/ - Test video processing function with ffmpeg support
     """
     def post(self, request):
         try:
@@ -523,6 +620,7 @@ class TestVideoProcessingView(APIView):
             video_path = request.data.get('video_path')
             camera_id = request.data.get('camera_id', 'test_camera_001')
             camera_name = request.data.get('camera_name', 'Test Camera')
+            video_track_index = request.data.get('video_track_index', 0)  # Default to first track
             
             if not video_path:
                 return Response(
@@ -552,9 +650,10 @@ class TestVideoProcessingView(APIView):
             
             logger.info(f"Testing video processing with camera: {camera_config}")
             logger.info(f"Video path: {video_path}")
+            logger.info(f"Video track index: {video_track_index}")
             
-            # Call the start_process function directly
-            results = start_process(camera_config, video_path)
+            # Call the start_process function directly with track index
+            results = start_process(camera_config, video_path, video_track_index)
             
             return Response({
                 'message': 'Video processing completed successfully',
@@ -573,4 +672,48 @@ class TestVideoProcessingView(APIView):
             return Response(
                 {'error': f'Video processing failed: {str(e)}'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            ) 
+            )
+
+
+class VideoInfoView(APIView):
+    """
+    POST /api/logs/video-info/ - Get video information and available tracks
+    """
+    def post(self, request):
+        try:
+            video_path = request.data.get('video_path')
+            
+            if not video_path:
+                return Response(
+                    {'error': 'video_path is required'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not os.path.exists(video_path):
+                return Response(
+                    {'error': f'Video file not found: {video_path}'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Get video information using ffmpeg
+            video_info = get_video_info(video_path)
+            
+            if not video_info:
+                return Response(
+                    {'error': 'Could not read video information'}, 
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            return Response({
+                'message': 'Video information retrieved successfully',
+                'video_info': video_info,
+                'video_path': video_path
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error getting video info: {e}")
+            return Response(
+                {'error': f'Failed to get video information: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
